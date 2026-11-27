@@ -15,3 +15,7 @@ Use these files as the working knowledge base for a dedicated ChatGPT project. D
 
 ## Working conventions
 Keep discussions concise; develop requirements before implementation. Prefer small, coordinated GitHub issues. Almost Heard Originals, Creators and Canon are distinct products. Canon is not a guest-creator feature. Preserve recording identity and tenant isolation. No automatic deployment unless requested.
+
+## Phase 1 handoff
+- 09: Technical implementation specification and owner gates (master #14; #15–21).
+- 10: Cursor implementation prompt. Planning only; implementation requires separate authorization.

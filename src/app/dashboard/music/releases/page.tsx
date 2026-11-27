@@ -18,6 +18,7 @@ export default async function ReleasesPage({
       description="Releases group songs. Removing a release removes the track list, not the songs."
       createHref="/dashboard/music/releases/new"
       createLabel="New release"
+      canCreate={ctx.canWrite}
       query={q ?? ""}
       rows={releases.map((release) => ({
         href: `/dashboard/music/releases/${release.id}`,

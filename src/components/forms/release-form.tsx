@@ -54,6 +54,7 @@ export function ReleaseForm({
   return (
     <div>
       <form action={action} className="form-grid" onChange={() => setDirty(true)}>
+        <section className="form-section">
         <h2>Details</h2>
         {state.error ? <p className="form-error" role="alert">{state.error}</p> : null}
         {release ? <input type="hidden" name="id" value={release.id} /> : null}
@@ -73,9 +74,12 @@ export function ReleaseForm({
         </label>
         <label>Release date<input name="release_date" type="date" defaultValue={release?.release_date ?? ""} disabled={!canWrite} /></label>
         <label className="check"><input name="distrokid_distributed" type="checkbox" defaultChecked={release?.distrokid_distributed ?? false} disabled={!canWrite} /><span>Distributed with DistroKid</span></label>
-        <button className="primary" type="submit" disabled={!canWrite || pending}>{pending ? "Saving…" : "Save release"}</button>
+        <div className="form-actions">
+          <button className="primary" type="submit" disabled={!canWrite || pending}>{pending ? "Saving…" : "Save release"}</button>
+        </div>
+        </section>
       </form>
-      <section className="editor-section">
+      <section className="form-section">
         <h2>Tracks</h2>
         {!release ? <p>Save the release before adding songs.</p> : null}
         {release ? (
@@ -101,7 +105,7 @@ export function ReleaseForm({
             <form action={addPlaceholderAction} className="form-grid">
               <input type="hidden" name="release_id" value={release.id} />
               <label>Placeholder title<input name="placeholder_title" required maxLength={200} /></label>
-              <button className="primary" type="submit">Add placeholder</button>
+              <div className="form-actions"><button className="primary" type="submit">Add placeholder</button></div>
             </form>
             <form action={attachExistingSongAction} className="form-grid">
               <input type="hidden" name="release_id" value={release.id} />
@@ -113,15 +117,15 @@ export function ReleaseForm({
                   ))}
                 </select>
               </label>
-              <button className="primary" type="submit">Add song</button>
+              <div className="form-actions"><button className="primary" type="submit">Add song</button></div>
             </form>
           </>
         ) : null}
       </section>
-      <section className="editor-section">
+      <section className="form-section">
         <h2>Publishing</h2>
         <ul>{blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>
-        <button type="button" disabled>Publish release</button>
+        <div className="form-actions"><button type="button" disabled>Publish release</button></div>
       </section>
     </div>
   );

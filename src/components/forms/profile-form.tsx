@@ -20,7 +20,9 @@ export function ProfileForm({
       <label>Display name<input name="display_name" required maxLength={120} defaultValue={displayName} disabled={!canWrite} /></label>
       <label>Handle<input name="handle" maxLength={40} defaultValue={handle ?? ""} disabled={!canWrite} /></label>
       <p className="muted">A handle is stored for a future public address. Public creator pages are not open, so the handle is not listed.</p>
-      <button className="primary" type="submit" disabled={!canWrite || pending}>{pending ? "Saving…" : "Save profile"}</button>
+      <div className="form-actions">
+        <button className="primary" type="submit" disabled={!canWrite || pending}>{pending ? "Saving…" : "Save profile"}</button>
+      </div>
     </form>
   );
 }

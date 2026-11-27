@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { getDashboardContext } from "@domains/catalogue/context";
 import { loadConnection } from "@domains/media/connection";
-import { audioObjectKey, coverObjectKey, stagingObjectKey, type CoverParent } from "@domains/music/paths";
+import { isVerifiedStorageConnection } from "@domains/media/storage-status";
+import { stagingObjectKey, type CoverParent } from "@domains/music/paths";
 import { isUuid, TECHNICAL_AUDIO_MAX_BYTES, TECHNICAL_COVER_MAX_BYTES } from "@domains/music/validation";
 import { sha256Hex } from "@platform/crypto/credentials";
 import { inspectCover, inspectMp3, looksLikeMp3, MP3_MIME } from "@platform/media/inspect";
@@ -24,9 +25,11 @@ const CHECKSUM_RE = /^[a-f0-9]{64}$/;
 
 async function activeCreator() {
   const ctx = await getDashboardContext();
-  if (ctx.kind !== "ready" || !ctx.canWrite || !ctx.storageConfigured || !hasServiceRoleKey()) {
+  if (ctx.kind !== "ready" || !ctx.canWrite || !hasServiceRoleKey()) {
     return null;
   }
+  const loaded = await loadConnection(ctx.creator.id);
+  if (!loaded || !isVerifiedStorageConnection(loaded.healthStatus)) return null;
   return ctx;
 }
 
@@ -57,21 +60,11 @@ export async function createAudioUploadAction(formData: FormData): Promise<Uploa
   if ((count ?? 0) > 0 && !confirmed) {
     return { error: "Replacing audio requires the confirmation checkbox." };
   }
-  const { data: versions } = await supabase
-    .from("acc_recordings")
-    .select("version")
-    .eq("creator_id", ctx.creator.id)
-    .eq("song_id", songId)
-    .order("version", { ascending: false })
-    .limit(1);
-  const version = ((versions?.[0]?.version as number | undefined) ?? 0) + 1;
   const { data: recording, error: recordingError } = await supabase
     .from("acc_recordings")
     .insert({
       creator_id: ctx.creator.id,
       song_id: songId,
-      version,
-      is_current: false,
     })
     .select("id")
     .single();
@@ -79,8 +72,8 @@ export async function createAudioUploadAction(formData: FormData): Promise<Uploa
   return createIntent({
     creatorId: ctx.creator.id,
     kind: "audio",
-    recordingId: recording.id,
-    objectKey: audioObjectKey(recording.id),
+    parent: "recording",
+    parentId: recording.id,
     mime: MP3_MIME,
     bytes,
     checksum,
@@ -116,26 +109,15 @@ export async function createCoverUploadAction(formData: FormData): Promise<Uploa
     .is("deleted_at", null)
     .maybeSingle();
   if (!row) return { error: "That item is not in this catalogue." };
-  const column = parent === "artists" ? "artist_id" : parent === "releases" ? "release_id" : "song_id";
-  const { data: current } = await supabase
-    .from("acc_media")
-    .select("revision")
-    .eq("creator_id", ctx.creator.id)
-    .eq(column, parentId)
-    .order("revision", { ascending: false })
-    .limit(1);
-  const revision = ((current?.[0]?.revision as number | undefined) ?? 0) + 1;
   return createIntent({
     creatorId: ctx.creator.id,
     kind: "cover",
-    artistId: parent === "artists" ? parentId : null,
-    releaseId: parent === "releases" ? parentId : null,
-    songId: parent === "songs" ? parentId : null,
-    objectKey: coverObjectKey(parent, parentId, revision),
+    parent: parent === "artists" ? "artist" : parent === "releases" ? "release" : "song",
+    parentId,
     mime,
     bytes,
     checksum,
-    idempotencyKey: String(formData.get("idempotency_key") ?? `${parentId}:${revision}`),
+    idempotencyKey: String(formData.get("idempotency_key") ?? crypto.randomUUID()),
   });
 }
 
@@ -154,7 +136,9 @@ export async function finalizeUploadAction(formData: FormData): Promise<{ error:
     return { error: "This upload has expired. Try again." };
   }
   const loaded = await loadConnection(ctx.creator.id);
-  if (!loaded) return { error: "Storage is not connected." };
+  if (!loaded || !isVerifiedStorageConnection(loaded.healthStatus)) {
+    return { error: "Connect your Cloudflare R2 storage before uploading." };
+  }
   const storage = r2Storage(loaded.connection);
   const staged = await storage.get(intent.staging_key);
   if (!staged || staged.byteLength !== intent.expected_bytes) {
@@ -199,6 +183,8 @@ export async function finalizeUploadAction(formData: FormData): Promise<{ error:
     p_etag: null,
     p_bucket: loaded.bucket,
     p_duration_ms: durationMs,
+    p_source_checksum: sha256Hex(staged),
+    p_source_bytes: staged.byteLength,
   });
   if (error) return { error: "The catalogue could not record the verified file." };
   if (intent.kind === "audio" && intent.recording_id) {
@@ -236,38 +222,29 @@ async function songIdForRecording(creatorId: string, recordingId: string): Promi
 async function createIntent(input: {
   creatorId: string;
   kind: "audio" | "cover";
-  recordingId?: string;
-  artistId?: string | null;
-  releaseId?: string | null;
-  songId?: string | null;
-  objectKey: string;
+  parent: "recording" | "artist" | "release" | "song";
+  parentId: string;
   mime: string;
   bytes: number;
   checksum: string;
   idempotencyKey: string;
 }): Promise<UploadTicket> {
   const loaded = await loadConnection(input.creatorId);
-  if (!loaded) return { error: "Connect storage before uploading." };
-  const id = crypto.randomUUID();
+  if (!loaded || !isVerifiedStorageConnection(loaded.healthStatus)) {
+    return { error: "Connect your Cloudflare R2 storage before uploading." };
+  }
   const supabase = await createServerSupabaseClient();
-  const { error } = await supabase.from("acc_upload_intents").insert({
-    creator_id: input.creatorId,
-    id,
-    kind: input.kind,
-    artist_id: input.artistId ?? null,
-    release_id: input.releaseId ?? null,
-    song_id: input.songId ?? null,
-    recording_id: input.recordingId ?? null,
-    staging_key: stagingObjectKey(id),
-    object_key: input.objectKey,
-    expected_mime: input.mime,
-    expected_bytes: input.bytes,
-    expected_checksum_sha256: input.checksum,
-    expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-    idempotency_key: input.idempotencyKey,
-    state: "pending",
+  const created = await supabase.rpc("acc_create_upload_intent", {
+    p_kind: input.kind,
+    p_parent: input.parent,
+    p_parent_id: input.parentId,
+    p_mime: input.mime,
+    p_bytes: input.bytes,
+    p_checksum: input.checksum,
+    p_idempotency_key: input.idempotencyKey,
   });
-  if (error) return { error: "The upload could not be started." };
+  const id = typeof created.data === "string" ? created.data : null;
+  if (created.error || !id) return { error: "The upload could not be started." };
   try {
     const uploadUrl = await presignPut({
       connection: loaded.connection,

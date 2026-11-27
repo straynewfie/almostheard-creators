@@ -16,7 +16,7 @@ import {
   isUuid,
   isValidSlug,
   normalizeSlug,
-  parseArtistKind,
+  artistKindFromCheckbox,
   parseBooleanFlag,
   parseIsoDate,
   parseRecordingKind,
@@ -59,12 +59,11 @@ export async function saveArtistAction(
   if (!access.ok) return access.state;
   const name = requireText(formData.get("name"), TITLE_MAX, "Name");
   const bio = cleanText(formData.get("bio"), TEXT_MAX);
-  const kind = parseArtistKind(formData.get("artist_kind"));
+  const kind = artistKindFromCheckbox(formData.get("artist_kind"));
   const fieldErrors: Record<string, string> = {};
   if (!name.ok) fieldErrors.name = name.error;
   if (!bio.ok) fieldErrors.bio = bio.error;
-  if (!kind) fieldErrors.artist_kind = "Choose an artist type.";
-  if (Object.keys(fieldErrors).length || !name.ok || !bio.ok || !kind) {
+  if (Object.keys(fieldErrors).length || !name.ok || !bio.ok) {
     return invalid(fieldErrors);
   }
   const id = String(formData.get("id") ?? "");
@@ -99,7 +98,6 @@ export async function saveArtistAction(
     slug,
     bio: bio.value,
     artist_kind: kind,
-    standalone_artist: kind === "individual" ? true : parseBooleanFlag(formData.get("standalone_artist")),
     distrokid_distributed: parseBooleanFlag(formData.get("distrokid_distributed")),
   };
   const result = editing
@@ -112,11 +110,16 @@ export async function saveArtistAction(
   return emptyFormState;
 }
 
+function deletionConfirmed(formData: FormData): boolean {
+  return formData.get("confirm") === "on";
+}
+
 export async function deleteArtistAction(formData: FormData): Promise<void> {
   const access = await writable();
   if (!access.ok) redirect("/dashboard/music/artists");
   const id = String(formData.get("id") ?? "");
   if (!isUuid(id)) redirect("/dashboard/music/artists");
+  if (!deletionConfirmed(formData)) redirect(`/dashboard/music/artists/${id}?error=confirm`);
   const [songs, releases] = await Promise.all([
     access.supabase.from("acc_songs").select("id", { count: "exact", head: true }).eq("creator_id", access.ctx.creator.id).eq("primary_artist_id", id).is("deleted_at", null),
     access.supabase.from("acc_releases").select("id", { count: "exact", head: true }).eq("creator_id", access.ctx.creator.id).eq("primary_artist_id", id).is("deleted_at", null),
@@ -356,6 +359,7 @@ export async function deleteReleaseAction(formData: FormData): Promise<void> {
   const access = await writable();
   const id = String(formData.get("id") ?? "");
   if (!access.ok || !isUuid(id)) redirect("/dashboard/music/releases");
+  if (!deletionConfirmed(formData)) redirect(`/dashboard/music/releases/${id}?error=confirm`);
   const { error } = await access.supabase.rpc("acc_soft_delete_release", { p_release_id: id });
   if (error) redirect(`/dashboard/music/releases/${id}?error=delete`);
   revalidatePath("/dashboard/music/releases");
@@ -366,6 +370,7 @@ export async function deleteSongAction(formData: FormData): Promise<void> {
   const access = await writable();
   const id = String(formData.get("id") ?? "");
   if (!access.ok || !isUuid(id)) redirect("/dashboard/music/songs");
+  if (!deletionConfirmed(formData)) redirect(`/dashboard/music/songs/${id}?error=confirm`);
   const { count } = await access.supabase
     .from("acc_release_tracks")
     .select("id", { count: "exact", head: true })

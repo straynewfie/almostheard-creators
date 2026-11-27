@@ -92,7 +92,9 @@ export function MediaUpload({
       {pending ? <div className="progress" aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div> : null}
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       {done ? <p role="status">Upload verified.</p> : null}
-      <button className="primary" type="submit" disabled={pending}>{pending ? "Uploading…" : "Upload"}</button>
+      <div className="form-actions">
+        <button className="primary" type="submit" disabled={pending}>{pending ? "Uploading…" : "Upload"}</button>
+      </div>
     </form>
   );
 }

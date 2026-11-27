@@ -5,6 +5,7 @@ export function CatalogueList({
   description,
   createHref,
   createLabel,
+  canCreate,
   query,
   rows,
 }: {
@@ -12,6 +13,7 @@ export function CatalogueList({
   description: string;
   createHref: string;
   createLabel: string;
+  canCreate: boolean;
   query: string;
   rows: { href: string; title: string; meta: string }[];
 }) {
@@ -22,7 +24,7 @@ export function CatalogueList({
     <section>
       <div className="row-actions">
         <h1 className="page-title">{title}</h1>
-        <Link className="button" href={createHref}>{createLabel}</Link>
+        {canCreate ? <Link className="button" href={createHref}>{createLabel}</Link> : null}
       </div>
       <p className="muted">{description}</p>
       <form>

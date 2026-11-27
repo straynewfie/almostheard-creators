@@ -5,7 +5,7 @@
 create or replace function public.acc_touch_catalogue_row()
 returns trigger
 language plpgsql
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 begin
   if tg_op = 'UPDATE' then
@@ -42,7 +42,7 @@ $$;
 create or replace function public.acc_forbid_hard_delete()
 returns trigger
 language plpgsql
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 begin
   raise exception 'this record cannot be hard-deleted' using errcode = '42501';
@@ -174,6 +174,7 @@ create table public.acc_recordings (
   first_published_at timestamptz,
   retired_at timestamptz,
   checksum_sha256 text,
+  duration_ms integer,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   created_by uuid,
@@ -188,6 +189,7 @@ create table public.acc_recordings (
   constraint acc_recordings_checksum check (
     checksum_sha256 is null or checksum_sha256 ~ '^[a-f0-9]{64}$'
   ),
+  constraint acc_recordings_duration check (duration_ms is null or duration_ms > 0),
   constraint acc_recordings_current_not_retired check (
     not (is_current and retired_at is not null)
   )
@@ -361,7 +363,7 @@ alter table public.acc_upload_intents
 create or replace function public.acc_protect_recording()
 returns trigger
 language plpgsql
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 begin
   if tg_op = 'UPDATE' then
@@ -393,7 +395,7 @@ $$;
 create or replace function public.acc_protect_track()
 returns trigger
 language plpgsql
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 begin
   if tg_op = 'INSERT'
@@ -434,7 +436,7 @@ $$;
 create or replace function public.acc_protect_media()
 returns trigger
 language plpgsql
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 begin
   if current_setting('acc.media_finalize', true) is distinct from 'on' then
@@ -511,12 +513,19 @@ create trigger acc_recordings_audit
   for each row execute function public.acc_audit_catalogue_row();
 
 alter table public.acc_artists enable row level security;
+alter table public.acc_artists force row level security;
 alter table public.acc_releases enable row level security;
+alter table public.acc_releases force row level security;
 alter table public.acc_songs enable row level security;
+alter table public.acc_songs force row level security;
 alter table public.acc_recordings enable row level security;
+alter table public.acc_recordings force row level security;
 alter table public.acc_release_tracks enable row level security;
+alter table public.acc_release_tracks force row level security;
 alter table public.acc_media enable row level security;
+alter table public.acc_media force row level security;
 alter table public.acc_publication_events enable row level security;
+alter table public.acc_publication_events force row level security;
 
 create policy acc_artists_select on public.acc_artists
   for select to authenticated
@@ -576,11 +585,10 @@ create policy acc_recordings_insert on public.acc_recordings
     and acc_private.is_active_member()
     and is_current = false
     and retired_at is null
+    and checksum_sha256 is null
+    and duration_ms is null
+    and first_published_at is null
   );
-create policy acc_recordings_update on public.acc_recordings
-  for update to authenticated
-  using (creator_id = acc_private.current_creator_id() and acc_private.is_active_member())
-  with check (creator_id = acc_private.current_creator_id() and acc_private.is_active_member());
 
 create policy acc_tracks_select on public.acc_release_tracks
   for select to authenticated
@@ -600,18 +608,42 @@ create policy acc_publication_select on public.acc_publication_events
     and acc_private.can_read_own_metadata()
   );
 
-revoke all on table public.acc_artists from public, anon;
-revoke all on table public.acc_releases from public, anon;
-revoke all on table public.acc_songs from public, anon;
-revoke all on table public.acc_recordings from public, anon;
-revoke all on table public.acc_release_tracks from public, anon;
-revoke all on table public.acc_media from public, anon;
-revoke all on table public.acc_publication_events from public, anon;
+revoke all on table public.acc_artists from public, anon, authenticated;
+revoke all on table public.acc_releases from public, anon, authenticated;
+revoke all on table public.acc_songs from public, anon, authenticated;
+revoke all on table public.acc_recordings from public, anon, authenticated;
+revoke all on table public.acc_release_tracks from public, anon, authenticated;
+revoke all on table public.acc_media from public, anon, authenticated;
+revoke all on table public.acc_publication_events from public, anon, authenticated;
 
-grant select, insert, update on table public.acc_artists to authenticated;
-grant select, insert, update on table public.acc_releases to authenticated;
-grant select, insert, update on table public.acc_songs to authenticated;
-grant select, insert, update on table public.acc_recordings to authenticated;
+grant select on table public.acc_artists to authenticated;
+grant insert (
+  creator_id, slug, name, bio, artist_kind, standalone_artist, distrokid_distributed, sort_order
+), update (
+  slug, name, bio, artist_kind, standalone_artist, distrokid_distributed, sort_order
+) on table public.acc_artists to authenticated;
+
+grant select on table public.acc_releases to authenticated;
+grant insert (
+  creator_id, slug, title, description, primary_artist_id, release_type, release_date,
+  distrokid_distributed, sort_order
+), update (
+  slug, title, description, primary_artist_id, release_type, release_date,
+  distrokid_distributed, sort_order
+) on table public.acc_releases to authenticated;
+
+grant select on table public.acc_songs to authenticated;
+grant insert (
+  creator_id, slug, title, description, primary_artist_id, recording_kind,
+  distrokid_distributed, sort_order
+), update (
+  slug, title, description, primary_artist_id, recording_kind,
+  distrokid_distributed, sort_order
+) on table public.acc_songs to authenticated;
+
+grant select on table public.acc_recordings to authenticated;
+grant insert (creator_id, song_id) on table public.acc_recordings to authenticated;
+
 grant select on table public.acc_release_tracks to authenticated;
 grant select on table public.acc_media to authenticated;
 grant select on table public.acc_publication_events to authenticated;

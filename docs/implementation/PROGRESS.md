@@ -1,6 +1,6 @@
 # Progress
 
-Updated November 27, 2026. Issues stay open. Nothing was deployed, and no production database or bucket was changed.
+Updated November 27, 2026. Issues stay open. Nothing was deployed, and no production bucket was changed. All five Creators migrations are applied on the shared Almost Heard Supabase project.
 
 ## Completed in the repository
 
@@ -8,9 +8,12 @@ Updated November 27, 2026. Issues stay open. Nothing was deployed, and no produc
 - Supabase SSR session refresh, registration, login, logout, email callback, and password reset. New profiles are inactive. Issue #16.
 - Migrations for creators, storage secrets, catalogue, recordings, media, upload intents, RLS, and transactional track and recording operations. Issues #16–#20.
 - Artist, release, and song editors, including placeholders, reorder, existing-song attach, and return to a release. Issues #18–#20.
+- Artist editor uses a Band / group checkbox. Unchecked stores `individual` and checked stores `band`. There is no standalone flag, band roster, or Canon relationship.
+- Artwork and audio selectors stay hidden until the creator's R2 connection is healthy. Upload actions enforce the same check.
+- Dashboard statistics, header name, sidebar current page, catalogue create buttons, form actions, and a confirmed danger zone for deletion.
 - Encrypted R2 connection, presigned upload, magic-byte and checksum checks, revisioned artwork, and recording replacement that does not overwrite the previous object. Issue #17.
 - Public creator routes and `/api/creators/catalogue` that return no catalogue data. Issue #5 is not implemented; the routes fail closed on purpose.
-- Automated tests for validation, membership, recordings, tracks, encryption, upload safety, and migration text. Issue #21 is only partly covered.
+- Automated tests for validation, membership, recordings, tracks, encryption, upload safety, migration text, and database tenant, membership, and catalogue behaviour. Issue #21 is only partly covered until the same checks run against the live project.
 
 ## Partially completed
 
@@ -26,24 +29,34 @@ Updated November 27, 2026. Issues stay open. Nothing was deployed, and no produc
 - Anonymous public catalogue and web playback.
 - Device pairing and private player access.
 - Quota enforcement.
-- Featured credits and band rosters.
+- Featured credits. Band rosters are out of scope.
 - Production deployment.
 
 ## Verification
 
-Executed locally on November 27, 2026, without Supabase or R2 credentials:
+Local checks on November 27, 2026, after the artist and storage refinements:
 
 - `npm.cmd run lint` passed.
 - `npm.cmd run typecheck` passed.
-- `npm.cmd test` passed, 18 tests.
-- `npm.cmd run build` passed. The mission page is static. Dashboard, auth, and media routes are dynamic.
+- `npm.cmd test` passed, 22 tests. The database test applies all five SQL files, including the standalone drop, on an in-process PostgreSQL database.
+- `npm.cmd run build` passed.
 
-Not executed: migration replay on Postgres, two real auth users, browser login, or an upload to R2. Those need the isolated project in `docs/implementation/OWNER-ACTIONS.md`. The migration test checks SQL text only, including the absence of a genre column.
+Completed on the shared Almost Heard Supabase project, as verified with the owner:
+
+- All five migrations applied successfully, including `20261127200000_acc_drop_standalone_artist.sql`. A read-only check matched the live tables, columns, and callable `acc_` functions to those files. The live `acc_artists` table has no `standalone_artist` column. Supabase does not store the applied SQL, so a byte-for-byte comparison was not possible.
+- All 12 `acc_` tables exist with RLS enabled.
+- Existing Almost Heard account authentication works.
+- Automatic creator profile creation works.
+- Membership defaults to inactive.
+- Direct membership modification is blocked.
+- Operator-controlled activation works. Creator `7dfb1b3f-66fd-4ea1-b055-2c3814a5684c` was changed from inactive to active through `acc_set_membership_state`.
+- The dashboard is accessible for that active creator.
+
+No upload was run against a real R2 bucket. The agent browser reached the sign-in page and did not have a dashboard session, so the refined layout was not clicked through in that browser. The development server returned 200 for an existing signed-in artist editor while these changes compiled.
 
 ## Next steps
 
-1. Owner provides an isolated Supabase project and applies the four migrations.
-2. Activate one test creator with the operator script and walk through artist, release, song, and upload.
-3. Add a live two-tenant RLS test once that database exists.
-4. Revisit genres only after the website catalogue is settled.
-5. Do not enable public reads until legal and launch gates are approved.
+1. Connect a test R2 bucket, confirm the health check, and upload artwork and audio.
+2. Repeat the two-tenant checks through the Supabase API on that project.
+3. Revisit genres only after the website catalogue is settled.
+4. Do not enable public reads until legal and launch gates are approved.

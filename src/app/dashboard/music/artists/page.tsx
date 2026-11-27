@@ -18,6 +18,7 @@ export default async function ArtistsPage({
       description="Artist identities belong to this creator account. The account itself is not an artist."
       createHref="/dashboard/music/artists/new"
       createLabel="New artist"
+      canCreate={ctx.canWrite}
       query={q ?? ""}
       rows={artists.map((artist) => ({
         href: `/dashboard/music/artists/${artist.id}`,

@@ -29,12 +29,11 @@ export function DashboardShell({
     <div className="app-shell">
       <aside className={open ? "sidebar open" : "sidebar"}>
         <Link className="brand" href="/">almost heard<span> / creators</span></Link>
-        <p className="muted">{displayName}</p>
         <nav aria-label="Creator workspace">
           {links.map(([href, label]) => {
-            const active = href === "/dashboard" ? pathname === href : pathname.startsWith(href);
+            const active = isCurrentPage(pathname, href);
             return (
-              <Link key={href} href={href} aria-current={active ? "page" : undefined}>{label}</Link>
+              <Link key={href} className={active ? "active" : undefined} href={href} aria-current={active ? "page" : undefined}>{label}</Link>
             );
           })}
         </nav>
@@ -45,14 +44,19 @@ export function DashboardShell({
       <div>
         <div className="dash-top">
           <div className="shell nav">
-            <button className="menu-button primary" type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+            <button className="menu-button" type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
               Menu
             </button>
-            <strong>{displayName}</strong>
+            <p className="header-name">{displayName}</p>
           </div>
         </div>
         <main className="main">{children}</main>
       </div>
     </div>
   );
+}
+
+function isCurrentPage(pathname: string, href: string): boolean {
+  if (href === "/dashboard") return pathname === "/dashboard";
+  return pathname === href || pathname.startsWith(`${href}/`);
 }

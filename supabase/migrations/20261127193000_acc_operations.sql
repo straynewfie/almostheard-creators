@@ -5,25 +5,46 @@
 create or replace function public.acc_touch_catalogue_row()
 returns trigger
 language plpgsql
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 begin
   if tg_op = 'UPDATE' then
+    new.created_at := old.created_at;
+    new.created_by := old.created_by;
     if new.creator_id is distinct from old.creator_id
       or new.id is distinct from old.id then
       raise exception 'ownership cannot be reassigned' using errcode = '42501';
     end if;
-    if new.published_at is distinct from old.published_at
+  end if;
+
+  -- Artists have no publication date. Touch the column only on tables that store it.
+  if tg_table_name in ('acc_releases', 'acc_songs') then
+    if tg_op = 'INSERT' and new.published_at is not null
+      and current_setting('acc.allow_publication', true) is distinct from 'on' then
+      raise exception 'publication date is server-controlled' using errcode = '42501';
+    end if;
+    if tg_op = 'UPDATE'
+      and new.published_at is distinct from old.published_at
       and current_setting('acc.allow_publication', true) is distinct from 'on'
       and current_setting('acc.recording_rotation', true) is distinct from 'on' then
       raise exception 'publication date is server-controlled' using errcode = '42501';
     end if;
   end if;
 
-  if new.visibility = 'public'
-    and (tg_op = 'INSERT' or old.visibility is distinct from 'public')
+  if tg_op = 'INSERT' and new.visibility is distinct from 'draft'
     and current_setting('acc.allow_publication', true) is distinct from 'on' then
     raise exception 'publication is disabled' using errcode = '42501';
+  end if;
+  if tg_op = 'UPDATE' and new.visibility is distinct from old.visibility then
+    if new.visibility = 'public'
+      and current_setting('acc.allow_publication', true) is distinct from 'on' then
+      raise exception 'publication is disabled' using errcode = '42501';
+    end if;
+    if new.visibility is distinct from 'public'
+      and current_setting('acc.allow_publication', true) is distinct from 'on'
+      and current_setting('acc.recording_rotation', true) is distinct from 'on' then
+      raise exception 'visibility is server-controlled' using errcode = '42501';
+    end if;
   end if;
 
   if tg_op = 'UPDATE'
@@ -33,10 +54,15 @@ begin
   end if;
 
   if tg_op = 'INSERT' then
-    new.created_by := coalesce(new.created_by, auth.uid());
+    new.created_at := pg_catalog.now();
+    if auth.uid() is not null then
+      new.created_by := auth.uid();
+    end if;
   end if;
-  new.updated_by := coalesce(auth.uid(), new.updated_by);
-  new.updated_at := now();
+  if auth.uid() is not null then
+    new.updated_by := auth.uid();
+  end if;
+  new.updated_at := pg_catalog.now();
   return new;
 end;
 $$;
@@ -44,13 +70,19 @@ $$;
 create or replace function public.acc_protect_song_derived()
 returns trigger
 language plpgsql
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 begin
+  if tg_op = 'INSERT' and new.duration_ms is not null
+    and current_setting('acc.media_finalize', true) is distinct from 'on'
+    and current_setting('acc.recording_rotation', true) is distinct from 'on' then
+    raise exception 'duration is derived from the current recording' using errcode = '42501';
+  end if;
   if tg_op = 'UPDATE'
     and new.duration_ms is distinct from old.duration_ms
-    and current_setting('acc.media_finalize', true) is distinct from 'on' then
-    raise exception 'duration is derived from audio' using errcode = '42501';
+    and current_setting('acc.media_finalize', true) is distinct from 'on'
+    and current_setting('acc.recording_rotation', true) is distinct from 'on' then
+    raise exception 'duration is derived from the current recording' using errcode = '42501';
   end if;
   return new;
 end;
@@ -58,30 +90,70 @@ $$;
 
 drop trigger if exists acc_songs_derived on public.acc_songs;
 create trigger acc_songs_derived
-  before update on public.acc_songs
+  before insert or update on public.acc_songs
   for each row execute function public.acc_protect_song_derived();
 
 create or replace function public.acc_protect_recording()
 returns trigger
 language plpgsql
-set search_path = public
+set search_path = pg_catalog, public
 as $$
+declare
+  v_version integer;
 begin
+  if tg_op = 'INSERT' then
+    perform 1 from public.acc_songs
+      where creator_id = new.creator_id and id = new.song_id
+      for update;
+    select coalesce(max(version), 0) + 1 into v_version
+    from public.acc_recordings
+    where creator_id = new.creator_id and song_id = new.song_id;
+    new.version := v_version;
+    new.created_at := pg_catalog.now();
+    if auth.uid() is not null then
+      new.created_by := auth.uid();
+    end if;
+    if new.is_current
+      and current_setting('acc.recording_rotation', true) is distinct from 'on' then
+      raise exception 'new recordings start out of the current slot' using errcode = '42501';
+    end if;
+    if new.retired_at is not null
+      and current_setting('acc.recording_rotation', true) is distinct from 'on' then
+      raise exception 'recording retirement is server-controlled' using errcode = '42501';
+    end if;
+    if new.first_published_at is not null
+      and current_setting('acc.allow_publication', true) is distinct from 'on' then
+      raise exception 'publication date is server-controlled' using errcode = '42501';
+    end if;
+    if (new.checksum_sha256 is not null or new.duration_ms is not null)
+      and current_setting('acc.media_finalize', true) is distinct from 'on' then
+      raise exception 'recording media fields are server-controlled' using errcode = '42501';
+    end if;
+  end if;
   if tg_op = 'UPDATE' then
+    new.created_at := old.created_at;
+    new.created_by := old.created_by;
+    new.version := old.version;
     if new.creator_id is distinct from old.creator_id
       or new.id is distinct from old.id
-      or new.song_id is distinct from old.song_id
-      or new.version is distinct from old.version
-      or new.created_at is distinct from old.created_at then
+      or new.song_id is distinct from old.song_id then
       raise exception 'recording identity is immutable' using errcode = '42501';
     end if;
     if new.is_current is distinct from old.is_current
       and current_setting('acc.recording_rotation', true) is distinct from 'on' then
       raise exception 'recording promotion is server-controlled' using errcode = '42501';
     end if;
+    if new.retired_at is distinct from old.retired_at
+      and current_setting('acc.recording_rotation', true) is distinct from 'on' then
+      raise exception 'recording retirement is server-controlled' using errcode = '42501';
+    end if;
     if new.checksum_sha256 is distinct from old.checksum_sha256
       and current_setting('acc.media_finalize', true) is distinct from 'on' then
       raise exception 'checksum is server-controlled' using errcode = '42501';
+    end if;
+    if new.duration_ms is distinct from old.duration_ms
+      and current_setting('acc.media_finalize', true) is distinct from 'on' then
+      raise exception 'recording duration is server-controlled' using errcode = '42501';
     end if;
     if new.first_published_at is distinct from old.first_published_at
       and current_setting('acc.allow_publication', true) is distinct from 'on'
@@ -89,14 +161,9 @@ begin
       raise exception 'publication date is server-controlled' using errcode = '42501';
     end if;
   end if;
-  if tg_op = 'INSERT' and new.is_current
-    and current_setting('acc.recording_rotation', true) is distinct from 'on' then
-    raise exception 'new recordings start out of the current slot' using errcode = '42501';
-  end if;
-  new.updated_at := now();
-  new.updated_by := coalesce(auth.uid(), new.updated_by);
-  if tg_op = 'INSERT' then
-    new.created_by := coalesce(new.created_by, auth.uid());
+  new.updated_at := pg_catalog.now();
+  if auth.uid() is not null then
+    new.updated_by := auth.uid();
   end if;
   return new;
 end;
@@ -107,7 +174,7 @@ returns uuid
 language plpgsql
 stable
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
   v_creator uuid := acc_private.current_creator_id();
@@ -127,7 +194,7 @@ create or replace function public.acc_add_release_placeholder(
 returns uuid
 language plpgsql
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
   v_creator uuid := public.acc_require_active_creator();
@@ -164,7 +231,7 @@ create or replace function public.acc_attach_release_song(
 returns void
 language plpgsql
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
   v_creator uuid := public.acc_require_active_creator();
@@ -203,7 +270,7 @@ create or replace function public.acc_remove_release_track(p_track_id uuid)
 returns void
 language plpgsql
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
   v_creator uuid := public.acc_require_active_creator();
@@ -224,7 +291,7 @@ create or replace function public.acc_reorder_release_tracks(
 returns void
 language plpgsql
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
   v_creator uuid := public.acc_require_active_creator();
@@ -284,7 +351,7 @@ create or replace function public.acc_promote_recording(
 returns void
 language plpgsql
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
   v_creator uuid := public.acc_require_active_creator();
@@ -309,6 +376,9 @@ begin
       and kind = 'audio'
       and is_current
       and verification_state = 'verified'
+  ) or not exists (
+    select 1 from public.acc_recordings
+    where creator_id = v_creator and id = p_recording_id and duration_ms > 0
   ) then
     raise exception 'recording has no verified audio';
   end if;
@@ -342,6 +412,13 @@ begin
   update public.acc_recordings
   set is_current = true, retired_at = null
   where creator_id = v_creator and id = p_recording_id;
+  update public.acc_songs as song
+  set duration_ms = recording.duration_ms
+  from public.acc_recordings as recording
+  where recording.creator_id = v_creator
+    and recording.id = p_recording_id
+    and song.creator_id = v_creator
+    and song.id = v_song;
 end;
 $$;
 
@@ -349,7 +426,7 @@ create or replace function public.acc_soft_delete_artist(p_artist_id uuid)
 returns void
 language plpgsql
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
   v_creator uuid := public.acc_require_active_creator();
@@ -377,7 +454,7 @@ create or replace function public.acc_soft_delete_release(p_release_id uuid)
 returns void
 language plpgsql
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
   v_creator uuid := public.acc_require_active_creator();
@@ -402,7 +479,7 @@ create or replace function public.acc_soft_delete_song(p_song_id uuid)
 returns void
 language plpgsql
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
   v_creator uuid := public.acc_require_active_creator();
@@ -437,20 +514,34 @@ create or replace function public.acc_write_verified_media(
   p_mime text,
   p_etag text,
   p_bucket text,
-  p_duration_ms integer
+  p_duration_ms integer,
+  p_source_checksum text,
+  p_source_bytes bigint
 )
 returns uuid
 language plpgsql
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
   v_intent public.acc_upload_intents%rowtype;
-  v_media_id uuid := gen_random_uuid();
+  v_media_id uuid := pg_catalog.gen_random_uuid();
   v_revision integer := 1;
 begin
   if auth.role() is distinct from 'service_role' then
     raise exception 'media verification is server-only' using errcode = '42501';
+  end if;
+  if not exists (
+    select 1 from public.acc_creators
+    where id = p_creator_id and membership_state = 'active'
+  ) then
+    raise exception 'creator is not active' using errcode = '42501';
+  end if;
+  if not exists (
+    select 1 from public.acc_storage_connections
+    where creator_id = p_creator_id and bucket_name = p_bucket
+  ) then
+    raise exception 'storage bucket does not match this creator' using errcode = '42501';
   end if;
   select * into v_intent
   from public.acc_upload_intents
@@ -459,17 +550,45 @@ begin
   if v_intent.id is null then
     raise exception 'upload not found' using errcode = '42501';
   end if;
-  if v_intent.state <> 'pending' or v_intent.expires_at <= now() then
+  if v_intent.state <> 'pending' or v_intent.expires_at <= pg_catalog.now() then
     raise exception 'upload cannot be finalized';
+  end if;
+  if p_source_checksum is distinct from v_intent.expected_checksum_sha256
+    or p_source_bytes is distinct from v_intent.expected_bytes then
+    raise exception 'uploaded object does not match the upload intent';
   end if;
   if p_checksum !~ '^[a-f0-9]{64}$' or p_bytes < 1 or p_bytes > 52428800 then
     raise exception 'verified file is not acceptable';
   end if;
-  if v_intent.kind = 'audio' and (p_mime <> 'audio/mpeg' or p_duration_ms is null or p_duration_ms <= 0) then
-    raise exception 'verified audio is not acceptable';
+  if v_intent.kind = 'audio' and (
+    p_mime <> 'audio/mpeg'
+    or p_mime is distinct from v_intent.expected_mime
+    or p_checksum is distinct from v_intent.expected_checksum_sha256
+    or p_bytes is distinct from v_intent.expected_bytes
+    or p_duration_ms is null
+    or p_duration_ms <= 0
+    or v_intent.object_key is distinct from 'recordings/' || v_intent.recording_id::text || '/audio.mp3'
+  ) then
+    raise exception 'verified audio does not match the upload intent';
   end if;
-  if v_intent.kind = 'cover' and p_mime <> 'image/webp' then
-    raise exception 'verified artwork must be webp';
+  if v_intent.kind = 'cover' and (
+    v_intent.expected_mime not in ('image/jpeg', 'image/png', 'image/webp')
+    or p_mime <> 'image/webp'
+    or p_bytes > 15728640
+    or (
+      v_intent.artist_id is not null
+      and v_intent.object_key !~ ('^artists/' || v_intent.artist_id::text || '/cover/[1-9][0-9]*\.webp$')
+    )
+    or (
+      v_intent.release_id is not null
+      and v_intent.object_key !~ ('^releases/' || v_intent.release_id::text || '/cover/[1-9][0-9]*\.webp$')
+    )
+    or (
+      v_intent.song_id is not null
+      and v_intent.object_key !~ ('^songs/' || v_intent.song_id::text || '/cover/[1-9][0-9]*\.webp$')
+    )
+  ) then
+    raise exception 'verified artwork does not match the upload intent';
   end if;
 
   perform set_config('acc.media_finalize', 'on', true);
@@ -507,15 +626,9 @@ begin
 
   if v_intent.kind = 'audio' then
     update public.acc_recordings
-    set checksum_sha256 = p_checksum
+    set checksum_sha256 = p_checksum,
+        duration_ms = p_duration_ms
     where creator_id = p_creator_id and id = v_intent.recording_id;
-    update public.acc_songs as song
-    set duration_ms = p_duration_ms
-    from public.acc_recordings as recording
-    where recording.creator_id = p_creator_id
-      and recording.id = v_intent.recording_id
-      and song.creator_id = recording.creator_id
-      and song.id = recording.song_id;
   end if;
 
   update public.acc_upload_intents
@@ -533,7 +646,7 @@ create or replace function public.acc_publish_song(
 returns void
 language plpgsql
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
   v_recording uuid;
@@ -594,17 +707,298 @@ begin
 end;
 $$;
 
-revoke all on function public.acc_require_active_creator() from public, anon;
-revoke all on function public.acc_add_release_placeholder(uuid, text, integer) from public, anon;
-revoke all on function public.acc_attach_release_song(uuid, uuid) from public, anon;
-revoke all on function public.acc_remove_release_track(uuid) from public, anon;
-revoke all on function public.acc_reorder_release_tracks(uuid, uuid[]) from public, anon;
-revoke all on function public.acc_promote_recording(uuid, boolean) from public, anon;
-revoke all on function public.acc_soft_delete_artist(uuid) from public, anon;
-revoke all on function public.acc_soft_delete_release(uuid) from public, anon;
-revoke all on function public.acc_soft_delete_song(uuid) from public, anon;
-revoke all on function public.acc_write_verified_media(uuid, uuid, text, bigint, text, text, text, integer) from public, anon, authenticated;
-revoke all on function public.acc_publish_song(uuid, uuid, boolean) from public, anon, authenticated;
+create or replace function public.acc_protect_upload_intent()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+declare
+  v_media_revision integer := 0;
+  v_intent_revision integer := 0;
+  v_parent text;
+  v_parent_id uuid;
+begin
+  if tg_op is null then
+    raise exception 'upload intents are trigger-protected' using errcode = '42501';
+  end if;
+  if tg_op = 'DELETE' then
+    raise exception 'upload intents cannot be deleted' using errcode = '42501';
+  end if;
+  if tg_op = 'INSERT' then
+    if current_setting('acc.upload_intent', true) is distinct from 'on' then
+      raise exception 'upload intents are server-created' using errcode = '42501';
+    end if;
+    if new.id is null then
+      new.id := pg_catalog.gen_random_uuid();
+    end if;
+    new.state := 'pending';
+    new.staging_key := 'staging/' || new.id::text || '/object';
+    new.expires_at := pg_catalog.now() + interval '15 minutes';
+    new.created_at := pg_catalog.now();
+    if new.kind = 'audio' then
+      if not exists (
+        select 1
+        from public.acc_recordings as recording
+        join public.acc_songs as song
+          on song.creator_id = recording.creator_id
+         and song.id = recording.song_id
+        where recording.creator_id = new.creator_id
+          and recording.id = new.recording_id
+          and recording.retired_at is null
+          and song.deleted_at is null
+      ) then
+        raise exception 'recording is not available for upload' using errcode = '42501';
+      end if;
+      new.object_key := 'recordings/' || new.recording_id::text || '/audio.mp3';
+      new.expected_mime := 'audio/mpeg';
+    elsif new.kind = 'cover' then
+      if new.artist_id is not null then
+        v_parent := 'artists';
+        v_parent_id := new.artist_id;
+        perform 1 from public.acc_artists
+          where creator_id = new.creator_id and id = new.artist_id and deleted_at is null;
+      elsif new.release_id is not null then
+        v_parent := 'releases';
+        v_parent_id := new.release_id;
+        perform 1 from public.acc_releases
+          where creator_id = new.creator_id and id = new.release_id and deleted_at is null;
+      elsif new.song_id is not null then
+        v_parent := 'songs';
+        v_parent_id := new.song_id;
+        perform 1 from public.acc_songs
+          where creator_id = new.creator_id and id = new.song_id and deleted_at is null;
+      else
+        raise exception 'artwork uploads require one parent' using errcode = '42501';
+      end if;
+      if not found then
+        raise exception 'that item is not in this catalogue' using errcode = '42501';
+      end if;
+      if new.expected_mime not in ('image/jpeg', 'image/png', 'image/webp')
+        or new.expected_bytes < 1
+        or new.expected_bytes > 15728640 then
+        raise exception 'artwork upload is not valid';
+      end if;
+      select coalesce(max(revision), 0) into v_media_revision
+      from public.acc_media
+      where creator_id = new.creator_id
+        and kind = 'cover'
+        and (
+          (artist_id = new.artist_id and new.artist_id is not null)
+          or (release_id = new.release_id and new.release_id is not null)
+          or (song_id = new.song_id and new.song_id is not null)
+        );
+      select coalesce(max((substring(object_key, '/cover/([0-9]+)\.webp$'))::integer), 0)
+        into v_intent_revision
+      from public.acc_upload_intents
+      where creator_id = new.creator_id
+        and kind = 'cover'
+        and state = 'pending'
+        and (
+          (artist_id = new.artist_id and new.artist_id is not null)
+          or (release_id = new.release_id and new.release_id is not null)
+          or (song_id = new.song_id and new.song_id is not null)
+        );
+      new.object_key := v_parent || '/' || v_parent_id::text || '/cover/'
+        || (
+          case
+            when v_media_revision > v_intent_revision then v_media_revision
+            else v_intent_revision
+          end + 1
+        )::text || '.webp';
+    else
+      raise exception 'upload kind is not valid';
+    end if;
+  end if;
+  if tg_op = 'UPDATE' then
+    if current_setting('acc.media_finalize', true) is distinct from 'on' then
+      raise exception 'upload intents cannot be edited' using errcode = '42501';
+    end if;
+    if new.creator_id is distinct from old.creator_id
+      or new.id is distinct from old.id
+      or new.kind is distinct from old.kind
+      or new.artist_id is distinct from old.artist_id
+      or new.release_id is distinct from old.release_id
+      or new.song_id is distinct from old.song_id
+      or new.recording_id is distinct from old.recording_id
+      or new.staging_key is distinct from old.staging_key
+      or new.object_key is distinct from old.object_key
+      or new.expected_mime is distinct from old.expected_mime
+      or new.expected_bytes is distinct from old.expected_bytes
+      or new.expected_checksum_sha256 is distinct from old.expected_checksum_sha256
+      or new.expires_at is distinct from old.expires_at
+      or new.idempotency_key is distinct from old.idempotency_key
+      or new.created_at is distinct from old.created_at
+      or old.state is distinct from 'pending'
+      or new.state is distinct from 'finalized' then
+      raise exception 'upload intent fields are immutable' using errcode = '42501';
+    end if;
+  end if;
+  new.updated_at := pg_catalog.now();
+  return new;
+end;
+$$;
+
+create or replace function public.acc_create_upload_intent(
+  p_kind text,
+  p_parent text,
+  p_parent_id uuid,
+  p_mime text,
+  p_bytes bigint,
+  p_checksum text,
+  p_idempotency_key text
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_creator uuid := public.acc_require_active_creator();
+  v_existing uuid;
+  v_id uuid := pg_catalog.gen_random_uuid();
+begin
+  if p_kind not in ('audio', 'cover') or p_parent_id is null then
+    raise exception 'upload is not valid' using errcode = '42501';
+  end if;
+  if p_checksum !~ '^[a-f0-9]{64}$'
+    or p_idempotency_key is null
+    or char_length(p_idempotency_key) < 8
+    or char_length(p_idempotency_key) > 200 then
+    raise exception 'upload is not valid';
+  end if;
+  if p_kind = 'audio' then
+    if p_parent is distinct from 'recording'
+      or p_mime is distinct from 'audio/mpeg'
+      or p_bytes < 1
+      or p_bytes > 52428800 then
+      raise exception 'audio upload is not valid';
+    end if;
+    perform 1 from public.acc_recordings
+      where creator_id = v_creator and id = p_parent_id
+      for update;
+  elsif p_parent = 'artist' then
+    perform 1 from public.acc_artists
+      where creator_id = v_creator and id = p_parent_id and deleted_at is null
+      for update;
+  elsif p_parent = 'release' then
+    perform 1 from public.acc_releases
+      where creator_id = v_creator and id = p_parent_id and deleted_at is null
+      for update;
+  elsif p_parent = 'song' then
+    perform 1 from public.acc_songs
+      where creator_id = v_creator and id = p_parent_id and deleted_at is null
+      for update;
+  else
+    raise exception 'upload parent is not valid' using errcode = '42501';
+  end if;
+  if not found then
+    raise exception 'that item is not in this catalogue' using errcode = '42501';
+  end if;
+
+  select id into v_existing
+  from public.acc_upload_intents
+  where creator_id = v_creator and idempotency_key = p_idempotency_key;
+  if v_existing is not null then
+    if exists (
+      select 1 from public.acc_upload_intents
+      where creator_id = v_creator
+        and id = v_existing
+        and state = 'pending'
+        and expires_at > pg_catalog.now()
+        and kind = p_kind
+        and expected_mime = p_mime
+        and expected_bytes = p_bytes
+        and expected_checksum_sha256 = p_checksum
+        and (
+          (p_parent = 'recording' and recording_id = p_parent_id)
+          or (p_parent = 'artist' and artist_id = p_parent_id)
+          or (p_parent = 'release' and release_id = p_parent_id)
+          or (p_parent = 'song' and song_id = p_parent_id)
+        )
+    ) then
+      return v_existing;
+    end if;
+    raise exception 'idempotency key was already used';
+  end if;
+
+  perform set_config('acc.upload_intent', 'on', true);
+  insert into public.acc_upload_intents (
+    creator_id, id, kind, artist_id, release_id, song_id, recording_id,
+    staging_key, object_key, expected_mime, expected_bytes, expected_checksum_sha256,
+    expires_at, state, idempotency_key
+  ) values (
+    v_creator,
+    v_id,
+    p_kind,
+    case when p_parent = 'artist' then p_parent_id else null end,
+    case when p_parent = 'release' then p_parent_id else null end,
+    case when p_parent = 'song' then p_parent_id else null end,
+    case when p_parent = 'recording' then p_parent_id else null end,
+    'staging/' || v_id::text || '/object',
+    'recordings/' || p_parent_id::text || '/audio.mp3',
+    p_mime,
+    p_bytes,
+    p_checksum,
+    pg_catalog.now() + interval '15 minutes',
+    'pending',
+    p_idempotency_key
+  );
+  return v_id;
+end;
+$$;
+
+create or replace function public.acc_protect_publication_event()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+begin
+  if tg_op = 'INSERT'
+    and current_setting('acc.allow_publication', true) is distinct from 'on'
+    and current_setting('acc.recording_rotation', true) is distinct from 'on' then
+    raise exception 'publication history is server-controlled' using errcode = '42501';
+  end if;
+  if tg_op <> 'INSERT' then
+    raise exception 'publication history cannot be changed' using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists acc_publication_events_protect on public.acc_publication_events;
+create trigger acc_publication_events_protect
+  before insert or update or delete on public.acc_publication_events
+  for each row execute function public.acc_protect_publication_event();
+
+revoke all on function public.acc_touch_catalogue_row() from public, anon, authenticated, service_role;
+revoke all on function public.acc_forbid_hard_delete() from public, anon, authenticated, service_role;
+revoke all on function public.acc_protect_recording() from public, anon, authenticated, service_role;
+revoke all on function public.acc_protect_track() from public, anon, authenticated, service_role;
+revoke all on function public.acc_protect_media() from public, anon, authenticated, service_role;
+revoke all on function public.acc_protect_song_derived() from public, anon, authenticated, service_role;
+revoke all on function public.acc_protect_upload_intent() from public, anon, authenticated, service_role;
+revoke all on function public.acc_protect_publication_event() from public, anon, authenticated, service_role;
+grant execute on function public.acc_touch_catalogue_row() to authenticated, service_role;
+grant execute on function public.acc_forbid_hard_delete() to authenticated, service_role;
+grant execute on function public.acc_protect_recording() to authenticated, service_role;
+grant execute on function public.acc_protect_track() to authenticated, service_role;
+grant execute on function public.acc_protect_media() to authenticated, service_role;
+grant execute on function public.acc_protect_song_derived() to authenticated, service_role;
+grant execute on function public.acc_protect_upload_intent() to authenticated, service_role;
+grant execute on function public.acc_protect_publication_event() to authenticated, service_role;
+
+revoke all on function public.acc_require_active_creator() from public, anon, authenticated, service_role;
+revoke all on function public.acc_add_release_placeholder(uuid, text, integer) from public, anon, authenticated, service_role;
+revoke all on function public.acc_attach_release_song(uuid, uuid) from public, anon, authenticated, service_role;
+revoke all on function public.acc_remove_release_track(uuid) from public, anon, authenticated, service_role;
+revoke all on function public.acc_reorder_release_tracks(uuid, uuid[]) from public, anon, authenticated, service_role;
+revoke all on function public.acc_promote_recording(uuid, boolean) from public, anon, authenticated, service_role;
+revoke all on function public.acc_soft_delete_artist(uuid) from public, anon, authenticated, service_role;
+revoke all on function public.acc_soft_delete_release(uuid) from public, anon, authenticated, service_role;
+revoke all on function public.acc_soft_delete_song(uuid) from public, anon, authenticated, service_role;
+revoke all on function public.acc_create_upload_intent(text, text, uuid, text, bigint, text, text) from public, anon, authenticated, service_role;
+revoke all on function public.acc_write_verified_media(uuid, uuid, text, bigint, text, text, text, integer, text, bigint) from public, anon, authenticated, service_role;
+revoke all on function public.acc_publish_song(uuid, uuid, boolean) from public, anon, authenticated, service_role;
 
 grant execute on function public.acc_add_release_placeholder(uuid, text, integer) to authenticated;
 grant execute on function public.acc_attach_release_song(uuid, uuid) to authenticated;
@@ -614,5 +1008,6 @@ grant execute on function public.acc_promote_recording(uuid, boolean) to authent
 grant execute on function public.acc_soft_delete_artist(uuid) to authenticated;
 grant execute on function public.acc_soft_delete_release(uuid) to authenticated;
 grant execute on function public.acc_soft_delete_song(uuid) to authenticated;
-grant execute on function public.acc_write_verified_media(uuid, uuid, text, bigint, text, text, text, integer) to service_role;
+grant execute on function public.acc_create_upload_intent(text, text, uuid, text, bigint, text, text) to authenticated;
+grant execute on function public.acc_write_verified_media(uuid, uuid, text, bigint, text, text, text, integer, text, bigint) to service_role;
 grant execute on function public.acc_publish_song(uuid, uuid, boolean) to service_role;

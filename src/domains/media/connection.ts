@@ -3,6 +3,7 @@ import "server-only";
 import { getDashboardContext } from "@domains/catalogue/context";
 import { decryptSecret, masterKeyFromBase64 } from "@platform/crypto/credentials";
 import { assertSameCreator } from "@platform/auth/tenant";
+import { isVerifiedStorageConnection } from "@domains/media/storage-status";
 import { credentialMasterKey } from "@platform/supabase/env";
 import { createServerSupabaseClient } from "@platform/supabase/server";
 import { createServiceRoleClient } from "@platform/supabase/service-role";
@@ -14,6 +15,8 @@ export type StorageStatus = {
   healthStatus: string;
   checkedAt: string | null;
 };
+
+export { isVerifiedStorageConnection };
 
 export type LoadedConnection = StorageStatus & {
   connection: {

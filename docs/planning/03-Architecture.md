@@ -3,6 +3,9 @@
 ## Boundaries
 Separate Creators public site and private dashboard; shared mobile player integration through APIs. Platform owns accounts, catalogue metadata, analytics and authorization. Creators own media in Cloudflare R2. Artist and release entities group recordings; store audio once per recording.
 
+## Database placement
+Creators stores its tables in the existing Almost Heard Supabase project and uses that project's authentication users. Catalogue tables are prefixed `acc_` and private helpers live in `acc_private`. Website tables stay on their `dcm_`, `dcf_`, and `dcs_` names. A person may have both an admin profile and a creator profile. Creators does not add a trigger on `auth.users`. Deleting an authentication user who already has a creator profile is blocked until a reviewed purge exists, because creator rows restrict that delete.
+
 One account-level production media base URL. Deterministic paths based on stable immutable IDs/slugs; one cover.webp per artist/release/song and audio.mp3 per song. Exact path schema TBD. No arbitrary media hosting. Guided R2 onboarding, connection health checks, restricted encrypted credentials and tenant isolation. Direct media uploads/downloads where practical. Never send R2 credentials to the player.
 
 ## Security and integrity

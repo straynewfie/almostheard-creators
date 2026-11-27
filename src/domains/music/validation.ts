@@ -94,6 +94,11 @@ export function parseArtistKind(value: unknown): ArtistKind | null {
   return null;
 }
 
+/** Unchecked Band / group means an individual. Any other value stays individual. */
+export function artistKindFromCheckbox(value: unknown): ArtistKind {
+  return value === "band" ? "band" : "individual";
+}
+
 export function parseRecordingKind(value: unknown): RecordingKind | null {
   if (value == null || value === "") return null;
   if (

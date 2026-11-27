@@ -12,7 +12,7 @@ export async function loadArtist(creatorId: string, id: string) {
   const supabase = await db();
   const { data } = await supabase
     .from("acc_artists")
-    .select("id, slug, name, bio, artist_kind, standalone_artist, distrokid_distributed, visibility")
+    .select("id, slug, name, bio, artist_kind, distrokid_distributed, visibility")
     .eq("creator_id", creatorId)
     .eq("id", id)
     .is("deleted_at", null)

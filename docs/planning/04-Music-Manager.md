@@ -2,6 +2,10 @@
 
 Private dashboard sections: Overview, Music Manager, Analytics, Storage, Account. Public site: Home, Creators, Artists, Releases, Songs, web player. No fictional Canon or behind-the-scenes features for guests.
 
+## Artists
+
+As of November 27, 2026, every Creators artist is an independent catalogue entity. The editor uses one checkbox, Band / group. Unchecked stores `individual`. Checked stores `band`. Those remain the only `artist_kind` values. Creators does not manage band members, individual-to-band links, or Canon-style character relationships. The `standalone_artist` column was removed by `20261127200000_acc_drop_standalone_artist.sql`, which is applied on the shared project.
+
 ## Genre catalogue dependency
 
 As of November 27, 2026, genre management is being designed in the Almost Heard website and Music Manager. Creators must not build a separate genre list, database column, management screen, or artist/song genre assignment. When the website genre catalogue, conventions, and architecture are established, Creators should reuse that system. Other catalogue work continues without genres.

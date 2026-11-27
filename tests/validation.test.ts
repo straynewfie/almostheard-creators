@@ -4,10 +4,12 @@ import {
   allocateUniqueSlug,
   isValidSlug,
   normalizeSlug,
+  artistKindFromCheckbox,
   parseIsoDate,
   parseReleaseType,
   requireText,
 } from "../src/domains/music/validation";
+import { isVerifiedStorageConnection } from "../src/domains/media/storage-status";
 
 test("slug rules match the Originals shape", () => {
   assert.equal(normalizeSlug("  My Artist!! "), "my-artist");
@@ -19,6 +21,19 @@ test("slug rules match the Originals shape", () => {
 test("hatty is not a creator release type", () => {
   assert.equal(parseReleaseType("hatty"), null);
   assert.equal(parseReleaseType("album"), "album");
+});
+
+test("band checkbox keeps the existing artist kinds", () => {
+  assert.equal(artistKindFromCheckbox("band"), "band");
+  assert.equal(artistKindFromCheckbox(null), "individual");
+  assert.equal(artistKindFromCheckbox("orchestra"), "individual");
+});
+
+test("uploads require a healthy storage connection", () => {
+  assert.equal(isVerifiedStorageConnection("healthy"), true);
+  assert.equal(isVerifiedStorageConnection("unknown"), false);
+  assert.equal(isVerifiedStorageConnection("unhealthy"), false);
+  assert.equal(isVerifiedStorageConnection(null), false);
 });
 
 test("text rejects html and empty required values", () => {

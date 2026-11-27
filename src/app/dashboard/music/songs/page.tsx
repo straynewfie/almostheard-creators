@@ -18,6 +18,7 @@ export default async function SongsPage({
       description="A song can appear on more than one release. Audio belongs to a recording, and replacing it creates a new recording."
       createHref="/dashboard/music/songs/new"
       createLabel="New song"
+      canCreate={ctx.canWrite}
       query={q ?? ""}
       rows={songs.map((song) => ({
         href: `/dashboard/music/songs/${song.id}`,

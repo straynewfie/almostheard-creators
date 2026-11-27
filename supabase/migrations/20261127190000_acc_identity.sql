@@ -4,7 +4,8 @@
 
 create schema if not exists acc_private;
 revoke all on schema acc_private from public, anon;
-grant usage on schema acc_private to authenticated;
+grant usage on schema public to authenticated, service_role;
+grant usage on schema acc_private to authenticated, service_role;
 
 create table public.acc_creators (
   id uuid primary key default gen_random_uuid(),
@@ -54,7 +55,7 @@ returns uuid
 language sql
 stable
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
   select id from public.acc_creators where auth_user_id = auth.uid()
 $$;
@@ -64,7 +65,7 @@ returns text
 language sql
 stable
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
   select membership_state
   from public.acc_creators
@@ -76,7 +77,7 @@ returns boolean
 language sql
 stable
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
   select coalesce(acc_private.membership_state() = 'active', false)
 $$;
@@ -86,7 +87,7 @@ returns boolean
 language sql
 stable
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
   select exists (
     select 1
@@ -103,10 +104,10 @@ as $$
   )
 $$;
 
-revoke all on function acc_private.current_creator_id() from public, anon;
-revoke all on function acc_private.membership_state() from public, anon;
-revoke all on function acc_private.is_active_member() from public, anon;
-revoke all on function acc_private.can_read_own_metadata() from public, anon;
+revoke all on function acc_private.current_creator_id() from public, anon, authenticated;
+revoke all on function acc_private.membership_state() from public, anon, authenticated;
+revoke all on function acc_private.is_active_member() from public, anon, authenticated;
+revoke all on function acc_private.can_read_own_metadata() from public, anon, authenticated;
 grant execute on function acc_private.current_creator_id() to authenticated;
 grant execute on function acc_private.membership_state() to authenticated;
 grant execute on function acc_private.is_active_member() to authenticated;
@@ -115,7 +116,7 @@ grant execute on function acc_private.can_read_own_metadata() to authenticated;
 create or replace function public.acc_protect_creator_row()
 returns trigger
 language plpgsql
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 begin
   if tg_op = 'INSERT' and new.membership_state is distinct from 'inactive' then
@@ -125,10 +126,10 @@ begin
   end if;
 
   if tg_op = 'UPDATE' then
+    new.created_at := old.created_at;
+    new.created_by := old.created_by;
     if new.id is distinct from old.id
-      or new.auth_user_id is distinct from old.auth_user_id
-      or new.created_at is distinct from old.created_at
-      or new.created_by is distinct from old.created_by then
+      or new.auth_user_id is distinct from old.auth_user_id then
       raise exception 'protected creator fields cannot change' using errcode = '42501';
     end if;
     if new.membership_state is distinct from old.membership_state
@@ -140,10 +141,20 @@ begin
     end if;
   end if;
 
-  new.updated_at := now();
+  if auth.uid() is not null then
+    new.updated_by := auth.uid();
+    if tg_op = 'INSERT' then
+      new.created_by := auth.uid();
+      new.created_at := pg_catalog.now();
+    end if;
+  end if;
+  new.updated_at := pg_catalog.now();
   return new;
 end;
 $$;
+
+revoke all on function public.acc_protect_creator_row() from public, anon, authenticated;
+grant execute on function public.acc_protect_creator_row() to authenticated, service_role;
 
 create trigger acc_creators_protect
   before insert or update on public.acc_creators
@@ -153,7 +164,7 @@ create or replace function public.acc_ensure_creator_profile(p_display_name text
 returns uuid
 language plpgsql
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
   v_uid uuid := auth.uid();
@@ -190,7 +201,7 @@ begin
 end;
 $$;
 
-revoke all on function public.acc_ensure_creator_profile(text) from public, anon;
+revoke all on function public.acc_ensure_creator_profile(text) from public, anon, authenticated;
 grant execute on function public.acc_ensure_creator_profile(text) to authenticated;
 
 create or replace function public.acc_set_membership_state(
@@ -201,7 +212,7 @@ create or replace function public.acc_set_membership_state(
 returns void
 language plpgsql
 security definer
-set search_path = public
+set search_path = pg_catalog, public
 as $$
 declare
   v_old text;
@@ -242,10 +253,11 @@ begin
 end;
 $$;
 
-revoke all on function public.acc_set_membership_state(uuid, text, boolean) from public, anon, authenticated;
+revoke all on function public.acc_set_membership_state(uuid, text, boolean) from public, anon, authenticated, service_role;
 grant execute on function public.acc_set_membership_state(uuid, text, boolean) to service_role;
 
 alter table public.acc_creators enable row level security;
+alter table public.acc_creators force row level security;
 
 create policy acc_creators_select
   on public.acc_creators
@@ -263,6 +275,7 @@ create policy acc_creators_update
   using (auth_user_id = auth.uid() and acc_private.is_active_member())
   with check (auth_user_id = auth.uid() and acc_private.is_active_member());
 
-revoke all on table public.acc_creators from public, anon;
-grant select, update on table public.acc_creators to authenticated;
+revoke all on table public.acc_creators from public, anon, authenticated;
+grant select on table public.acc_creators to authenticated;
+grant update (display_name, handle) on table public.acc_creators to authenticated;
 grant select, insert, update, delete on table public.acc_creators to service_role;

@@ -41,6 +41,7 @@ export function SongForm({
   return (
     <div>
       <form action={action} className="form-grid" onChange={() => setDirty(true)}>
+        <section className="form-section">
         <h2>Details</h2>
         {state.error ? <p className="form-error" role="alert">{state.error}</p> : null}
         {song ? <input type="hidden" name="id" value={song.id} /> : null}
@@ -64,9 +65,12 @@ export function SongForm({
         </label>
         <label className="check"><input name="distrokid_distributed" type="checkbox" defaultChecked={song?.distrokid_distributed ?? false} disabled={!canWrite} /><span>Distributed with DistroKid</span></label>
         {song ? <p>Duration: {song.duration_ms ? `${Math.round(song.duration_ms / 1000)} seconds` : "Waiting for verified audio."}</p> : null}
-        <button className="primary" type="submit" disabled={!canWrite || pending}>{pending ? "Saving…" : "Save song"}</button>
+        <div className="form-actions">
+          <button className="primary" type="submit" disabled={!canWrite || pending}>{pending ? "Saving…" : "Save song"}</button>
+        </div>
+        </section>
       </form>
-      <section className="editor-section">
+      <section className="form-section">
         <h2>Publishing</h2>
         <p><span className="badge">{song ? visibilityLabel(song.visibility) : "Draft"}</span></p>
         {publicationTestMode ? <p className="form-error">Test-only publication is enabled. Do not use this setting in production.</p> : null}
@@ -74,9 +78,9 @@ export function SongForm({
         {song && publicationTestMode && canWrite && blockers.length === 0 ? (
           <form action={publishSongAction}>
             <input type="hidden" name="id" value={song.id} />
-            <button className="primary" type="submit">Publish song</button>
+            <div className="form-actions"><button className="primary" type="submit">Publish song</button></div>
           </form>
-        ) : <button type="button" disabled>Publish song</button>}
+        ) : <div className="form-actions"><button type="button" disabled>Publish song</button></div>}
       </section>
     </div>
   );

@@ -6,12 +6,12 @@ This repository is deliberately separate from the Almost Heard main website, Can
 
 ## Preview
 
-Open `index.html` in a browser, or run a simple static server from this directory.
+Open `public/index.html` in a browser, or run a simple static server from this directory.
 
 ## Deploy via Cloudflare Workers (static assets)
 
 1. In Cloudflare, create a Worker connected to this GitHub repository (or use Wrangler after cloning).
-2. Use the repository root as the static assets directory, with no build command.
+2. Use `public/` as the static assets directory, with no build command.
 3. Attach the custom domain `creators.almostheard.ca` to that Worker once deployed.
 
 A minimal `wrangler.jsonc` is included for local Wrangler deployments. **Deployment is deliberately manual**; no GitHub Actions or automatic deployment workflow is configured in this repository.

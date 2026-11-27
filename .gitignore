@@ -1,0 +1,16 @@
+node_modules/
+.next/
+.open-next/
+.wrangler/
+out/
+build/
+coverage/
+*.pem
+.env
+.env.local
+.env.*.local
+npm-debug.log*
+.DS_Store
+next-env.d.ts
+cloudflare-env.d.ts
+tsconfig.tsbuildinfo

@@ -2,6 +2,10 @@
 
 Private dashboard sections: Overview, Music Manager, Analytics, Storage, Account. Public site: Home, Creators, Artists, Releases, Songs, web player. No fictional Canon or behind-the-scenes features for guests.
 
+## Genre catalogue dependency
+
+As of November 27, 2026, genre management is being designed in the Almost Heard website and Music Manager. Creators must not build a separate genre list, database column, management screen, or artist/song genre assignment. When the website genre catalogue, conventions, and architecture are established, Creators should reuse that system. Other catalogue work continues without genres.
+
 ## Integrated editing
 Artist, release and song forms manage metadata and artwork/audio directly. Convert cover art to WebP. Release editor supports existing songs or new placeholders; Add/Edit Song returns to the release workflow. Keep release in draft until all required tracks are complete. Store audio once, not duplicated per release. Validate quotas, media readiness and ownership before publishing.
 

@@ -103,10 +103,12 @@ export async function presignGet(input: {
   connection: R2Connection;
   key: string;
   expiresIn: number;
+  responseCacheControl?: string;
 }): Promise<string> {
   const command = new GetObjectCommand({
     Bucket: input.connection.bucket,
     Key: input.key,
+    ResponseCacheControl: input.responseCacheControl,
   });
   return getSignedUrl(clientFor(input.connection), command, {
     expiresIn: input.expiresIn,

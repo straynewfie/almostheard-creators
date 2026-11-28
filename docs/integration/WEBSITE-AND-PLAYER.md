@@ -72,9 +72,9 @@ Observations from Originals `9360529` and the player `6058a29`. No changes were 
 ### Signed creator media versus public URLs
 
 - Target: player playback and website audio delivery.
-- Existing implementation: the player plays `audioUrl` directly. Originals uses its own R2 delivery. Creators signs a 120-second GET for the active member only.
-- Limitation: the player cannot hold a reusable public URL for private creator audio.
-- Recommended change: a playback grant that returns a short-lived URL for one recording id after device authorization.
+- Existing implementation: the player plays `audioUrl` directly and seeks with HTTP range requests. Originals artwork URLs change a `?v=` query when the file changes. Creators signs a 60-minute GET for the active member. Artwork cache revision stays on the app URL, and the signed object response is `private, no-store`. Renewal is another request to the media route.
+- Limitation: the player keeps a queued `audioUrl` until that song is played again. A creator URL must identify the submission, not only the song, or a replacement would play through the old URL. One hundred and twenty seconds is shorter than a listening session.
+- Recommended change: a playback grant that returns a signed URL for the current submission id after device authorization. The lifetime is an owner decision. Superseded objects are deleted, so an old signature fails after deletion except for audio already buffered.
 - Benefit: private listening without giving the player R2 keys.
 - Dependencies: pairing issue #13. Expiry and device limits are undecided.
 - Compatibility: public Originals URLs can stay absolute.

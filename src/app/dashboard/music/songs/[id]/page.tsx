@@ -65,7 +65,7 @@ export default async function SongEditorPage({
         {ctx.canWrite ? (
           storageReady
             ? <MediaUpload label="Cover image" accept="image/webp,image/png,image/jpeg" mode="cover" parent="songs" parentId={song.id} />
-            : <StorageNotice />
+            : <StorageNotice returnTo={`/dashboard/music/songs/${song.id}`} />
         ) : null}
       </section>
       <section className="editor-section">
@@ -82,7 +82,7 @@ export default async function SongEditorPage({
               songId={song.id}
               needsReplacementConfirm={Boolean(recording)}
             />
-          ) : <StorageNotice />
+          ) : <StorageNotice returnTo={`/dashboard/music/songs/${song.id}`} />
         ) : null}
       </section>
       {ctx.canWrite ? (

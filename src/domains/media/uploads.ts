@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { getDashboardContext } from "@domains/catalogue/context";
 import { loadConnection } from "@domains/media/connection";
 import { isVerifiedStorageConnection } from "@domains/media/storage-status";
+import { clearObjectDeletion, queueObjectDeletion } from "@domains/media/deletions";
+import { recoverInterruptedStorage } from "@domains/media/recovery";
 import { stagingObjectKey, type CoverParent } from "@domains/music/paths";
 import { isUuid, TECHNICAL_AUDIO_MAX_BYTES, TECHNICAL_COVER_MAX_BYTES } from "@domains/music/validation";
 import { sha256Hex } from "@platform/crypto/credentials";
@@ -140,6 +142,7 @@ export async function finalizeUploadAction(formData: FormData): Promise<{ error:
     return { error: "Connect your Cloudflare R2 storage before uploading." };
   }
   const storage = r2Storage(loaded.connection);
+  await recoverInterruptedStorage(ctx.creator.id, loaded.bucket, storage).catch(() => undefined);
   const staged = await storage.get(intent.staging_key);
   if (!staged || staged.byteLength !== intent.expected_bytes) {
     return { error: "The uploaded file could not be verified." };
@@ -165,11 +168,8 @@ export async function finalizeUploadAction(formData: FormData): Promise<{ error:
   } catch {
     return { error: "The uploaded file could not be processed." };
   }
-  const existing = await storage.head(intent.object_key);
-  if (existing) return { error: "That file is already stored and was left unchanged." };
   try {
     await storage.put(intent.object_key, stored, mime);
-    await storage.delete(intent.staging_key);
   } catch {
     return { error: "The verified file could not be stored." };
   }
@@ -186,7 +186,16 @@ export async function finalizeUploadAction(formData: FormData): Promise<{ error:
     p_source_checksum: sha256Hex(staged),
     p_source_bytes: staged.byteLength,
   });
-  if (error) return { error: "The catalogue could not record the verified file." };
+  if (error) {
+    await removeOrQueue(ctx.creator.id, loaded.bucket, storage, intent.object_key);
+    if (intent.kind === "audio") {
+      return { error: "The catalogue could not record the verified file. The current audio was left in place." };
+    }
+    return { error: "The catalogue could not record the verified artwork. The current image was left in place." };
+  }
+  if (intent.kind === "cover") {
+    await recoverInterruptedStorage(ctx.creator.id, loaded.bucket, storage).catch(() => undefined);
+  }
   if (intent.kind === "audio" && intent.recording_id) {
     const songId = await songIdForRecording(ctx.creator.id, intent.recording_id);
     const currentForSong = songId
@@ -197,15 +206,54 @@ export async function finalizeUploadAction(formData: FormData): Promise<{ error:
           .eq("song_id", songId)
           .eq("is_current", true)
       : { count: 0 };
-    if ((currentForSong.count ?? 0) === 0 || formData.get("confirm_replacement") === "1") {
-      await supabase.rpc("acc_promote_recording", {
-        p_recording_id: intent.recording_id,
-        p_confirmed: true,
-      });
+    const mayPromote = (currentForSong.count ?? 0) === 0 || formData.get("confirm_replacement") === "1";
+    if (!mayPromote) {
+      return { error: "The new audio is stored, but it was not made current. The previous file was left in place." };
+    }
+    const promoted = await supabase.rpc("acc_promote_recording", {
+      p_recording_id: intent.recording_id,
+      p_confirmed: true,
+    });
+    if (promoted.error) {
+      return { error: "The new audio is stored, but it was not made current. The previous file was left in place." };
+    }
+    const retired = await supabase.rpc("acc_retire_replaced_audio", {
+      p_recording_id: intent.recording_id,
+    });
+    if (retired.error) {
+      if (retired.error.code !== "42883") {
+        return { error: "The new audio is current. The previous file was left in place and can be removed from Storage." };
+      }
+    } else {
+      const keys = Array.isArray(retired.data) ? retired.data : [];
+      for (const key of keys) {
+        if (typeof key === "string") {
+          await removeOrQueue(ctx.creator.id, loaded.bucket, storage, key);
+        }
+      }
     }
   }
+  await storage.delete(intent.staging_key).catch(() => undefined);
   revalidatePath("/dashboard");
   return { error: null };
+}
+
+async function removeOrQueue(
+  creatorId: string,
+  bucket: string,
+  storage: { delete(key: string): Promise<void>; head(key: string): Promise<unknown> },
+  key: string,
+): Promise<void> {
+  try {
+    await storage.delete(key);
+    if (!(await storage.head(key))) {
+      await clearObjectDeletion(creatorId, bucket, key);
+      return;
+    }
+    await queueObjectDeletion(creatorId, bucket, key, "The previous file is still present.");
+  } catch {
+    await queueObjectDeletion(creatorId, bucket, key, "The previous file could not be deleted.");
+  }
 }
 
 async function songIdForRecording(creatorId: string, recordingId: string): Promise<string | null> {

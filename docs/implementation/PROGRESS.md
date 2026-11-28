@@ -10,8 +10,9 @@ Updated November 27, 2026. Issues stay open. Nothing was deployed, and no produc
 - Artist, release, and song editors, including placeholders, reorder, existing-song attach, and return to a release. Issues #18–#20.
 - Artist editor uses a Band / group checkbox. Unchecked stores `individual` and checked stores `band`. There is no standalone flag, band roster, or Canon relationship.
 - Artwork and audio selectors stay hidden until the creator's R2 connection is healthy. Upload actions enforce the same check.
+- Guided storage setup, private Cloudflare OAuth, browser verification, and single-current-audio replacement are implemented. The OAuth client was not created, no bucket was created, and `20261127210000_acc_storage_onboarding.sql` is not applied. See `docs/implementation/STORAGE-ARCHITECTURE.md`.
 - Dashboard statistics, header name, sidebar current page, catalogue create buttons, form actions, and a confirmed danger zone for deletion.
-- Encrypted R2 connection, presigned upload, magic-byte and checksum checks, revisioned artwork, and recording replacement that does not overwrite the previous object. Issue #17.
+- Encrypted R2 connection, presigned upload, magic-byte and checksum checks, immutable artwork keys, and audio replacement that deletes the previous object after the new submission is current. Issue #17.
 - Public creator routes and `/api/creators/catalogue` that return no catalogue data. Issue #5 is not implemented; the routes fail closed on purpose.
 - Automated tests for validation, membership, recordings, tracks, encryption, upload safety, migration text, and database tenant, membership, and catalogue behaviour. Issue #21 is only partly covered until the same checks run against the live project.
 
@@ -34,11 +35,11 @@ Updated November 27, 2026. Issues stay open. Nothing was deployed, and no produc
 
 ## Verification
 
-Local checks on November 27, 2026, after the artist and storage refinements:
+Local checks on November 27, 2026, after the storage onboarding foundation:
 
 - `npm.cmd run lint` passed.
 - `npm.cmd run typecheck` passed.
-- `npm.cmd test` passed, 22 tests. The database test applies all five SQL files, including the standalone drop, on an in-process PostgreSQL database.
+- `npm.cmd test` passed, 29 tests. The database test applies all six SQL files on an in-process PostgreSQL database. The sixth file is not applied to the shared project.
 - `npm.cmd run build` passed.
 
 Completed on the shared Almost Heard Supabase project, as verified with the owner:
@@ -56,7 +57,7 @@ No upload was run against a real R2 bucket. The agent browser reached the sign-i
 
 ## Next steps
 
-1. Connect a test R2 bucket, confirm the health check, and upload artwork and audio.
+1. Apply `20261127210000_acc_storage_onboarding.sql`, create the private OAuth client, and run setup from the app. Do not create the bucket by hand.
 2. Repeat the two-tenant checks through the Supabase API on that project.
 3. Revisit genres only after the website catalogue is settled.
 4. Do not enable public reads until legal and launch gates are approved.

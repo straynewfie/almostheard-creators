@@ -38,9 +38,9 @@ Artwork and audio controls render only when the creator's R2 connection has `hea
 
 The website and Music Manager are defining a shared genre catalogue. Creators has no genre column, validation, or assignment control. Song metadata otherwise continues. See `docs/planning/04-Music-Manager.md`.
 
-## Artwork revisions do not overwrite
+## Artwork and audio paths
 
-Planning 09 proposed one `cover.webp` per entity. This foundation writes `artists|releases|songs/{id}/cover/{revision}.webp` and flips `is_current` only after verification. A failed replacement leaves the previous object. Audio uses `recordings/{recordingId}/audio.mp3`, so a new recording never overwrites the previous file.
+Artwork keys are `artists|releases|songs/{id}.webp`. The revision is `?v=` on `/api/media/{id}`, not on the signed R2 URL. Audio keys are `songs/{songId}/{submissionId}.mp3`. The previous audio object is deleted after the new submission is current, or queued when the delete fails. `acc_recordings` remains the submission id, not a playable history. Private playback URLs last 60 minutes and are renewed by requesting the media route again. The database change is `supabase/migrations/20261127210000_acc_storage_onboarding.sql`. It is not applied to the shared project.
 
 ## Public catalogue fails closed
 
@@ -55,6 +55,8 @@ The creator check constraint is `album`, `ep`, `single`, and `compilation`. Hatt
 Proposed prices and catalogue allowances are not enforced. Featured credits and streaming-link fields are omitted until their contracts are approved. Band membership is not a Creators feature. DistroKid is a boolean flag only.
 
 ## Upload and duration integrity
+
+Artwork object keys are immutable: `artists/{artistId}/{uploadId}.webp`, `releases/{releaseId}/{uploadId}.webp`, and `songs/{songId}/{uploadId}.webp`. The upload id is the upload intent id. A replacement stores a new object, switches the current media row, and queues the previous object. It does not change the song, its submission, publication, or engagement. There is no artwork backup or version history. Audio stays `songs/{songId}/{submissionId}.mp3` and still deletes the previous file only after the new submission is current.
 
 Authenticated clients cannot insert `acc_upload_intents`. `acc_create_upload_intent` checks the active membership, parent, MIME type, size, and checksum, then the database assigns the object key, staging key, and a 15-minute expiry. `acc_write_verified_media` runs only as `service_role`, requires the creator to still be active, and requires the measured source checksum and size to match that intent. Audio must also match the stored checksum, size, and `audio/mpeg` type. Artwork is converted to WebP, so the stored checksum can differ; the database still checks the source against the intent and requires the stored object to be WebP inside the technical size bound. A replacement recording stores its duration on the recording. The song duration changes when that recording becomes current.
 

@@ -113,13 +113,57 @@ export async function runStorageHealthCheck(input: {
   try {
     await input.storage.put(input.key, body, "text/plain");
     const head = await input.storage.head(input.key);
-    if (!head || head.byteSize !== body.byteLength) {
+    const stored = head && head.byteSize === body.byteLength ? await input.storage.get(input.key) : null;
+    const copyKey = `${input.key}.copy`;
+    if (stored && stored.byteLength === body.byteLength) {
+      await input.storage.copy(input.key, copyKey);
+    }
+    const copied = await input.storage.get(copyKey);
+    await input.storage.delete(input.key);
+    await input.storage.delete(copyKey);
+    if (!head || !stored || !copied || copied.byteLength !== body.byteLength) {
       return { ok: false, error: "The health check could not be confirmed." };
+    }
+    if (await input.storage.head(input.key)) {
+      return { ok: false, error: "The health check could not be removed." };
     }
     return { ok: true };
   } catch {
-    return { ok: false, error: "The storage connection could not be reached." };
-  } finally {
     await input.storage.delete(input.key).catch(() => undefined);
+    await input.storage.delete(`${input.key}.copy`).catch(() => undefined);
+    return { ok: false, error: "The storage connection could not be reached." };
+  }
+}
+
+export async function commitAudioReplacement(input: {
+  storage: ObjectStorage;
+  previousKey: string | null;
+  nextKey: string;
+  bytes: Uint8Array;
+  mime: string;
+}): Promise<{ ok: true; previousDeleted: boolean } | { ok: false; error: string }> {
+  if (!input.previousKey || input.previousKey === input.nextKey) {
+    return { ok: false, error: "The replacement destination is not a new submission." };
+  }
+  const existing = await input.storage.head(input.nextKey);
+  if (existing) {
+    return { ok: false, error: "The destination already has a file. The current file was left in place." };
+  }
+  try {
+    await input.storage.put(input.nextKey, input.bytes, input.mime);
+    const head = await input.storage.head(input.nextKey);
+    if (!head || head.byteSize !== input.bytes.byteLength) {
+      return { ok: false, error: "The replacement could not be confirmed. The current file was left in place." };
+    }
+  } catch {
+    return { ok: false, error: "The replacement could not be stored. The current file was left in place." };
+  }
+  try {
+    await input.storage.delete(input.previousKey);
+    const gone = await input.storage.head(input.previousKey);
+    if (gone) return { ok: true, previousDeleted: false };
+    return { ok: true, previousDeleted: true };
+  } catch {
+    return { ok: true, previousDeleted: false };
   }
 }

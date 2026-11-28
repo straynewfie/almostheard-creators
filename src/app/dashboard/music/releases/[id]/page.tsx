@@ -73,7 +73,7 @@ export default async function ReleaseEditorPage({
         {ctx.canWrite ? (
           storageReady
             ? <MediaUpload label="Cover image" accept="image/webp,image/png,image/jpeg" mode="cover" parent="releases" parentId={release.id} />
-            : <StorageNotice />
+            : <StorageNotice returnTo={`/dashboard/music/releases/${release.id}`} />
         ) : null}
       </section>
       {ctx.canWrite ? (

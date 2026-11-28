@@ -75,10 +75,12 @@ test("health check deletes only its own key", async () => {
   assert.equal(storage.objects.has("keep/me"), true);
 });
 
-test("object keys use stable ids and artwork revisions", () => {
-  assert.equal(audioObjectKey(recordingId), `recordings/${recordingId}/audio.mp3`);
-  assert.equal(coverObjectKey("songs", recordingId, 2), `songs/${recordingId}/cover/2.webp`);
-  assert.throws(() => coverObjectKey("songs", "slug-name", 1));
+test("object keys use immutable artwork and one audio submission", () => {
+  assert.equal(audioObjectKey(otherId, recordingId), `songs/${otherId}/${recordingId}.mp3`);
+  assert.equal(coverObjectKey("artists", otherId, recordingId), `artists/${otherId}/${recordingId}.webp`);
+  assert.equal(coverObjectKey("songs", otherId, recordingId), `songs/${otherId}/${recordingId}.webp`);
+  assert.throws(() => coverObjectKey("songs", "slug-name", recordingId));
+  assert.throws(() => audioObjectKey("slug", recordingId));
 });
 
 test("auth redirects and tenant checks stay inside the creator boundary", () => {

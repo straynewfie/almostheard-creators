@@ -25,8 +25,8 @@ test("migrations isolate tenants and omit genres", () => {
   assert.match(sql, /set search_path = pg_catalog, public/);
   assert.match(sql, /grant execute on function public\.acc_publish_song\(uuid, uuid, boolean\) to service_role/);
   assert.match(sql, /grant execute on function public\.acc_create_upload_intent\(text, text, uuid, text, bigint, text, text\) to authenticated/);
-  assert.doesNotMatch(sql, /grant execute on function public\.acc_publish_song[\s\S]*to authenticated/);
-  assert.doesNotMatch(sql, /grant execute on function public\.acc_write_verified_media[\s\S]*to authenticated/);
+  assert.doesNotMatch(sql, /grant execute on function public\.acc_publish_song\(uuid, uuid, boolean\) to authenticated/);
+  assert.doesNotMatch(sql, /grant execute on function public\.acc_write_verified_media\(uuid, uuid, text, bigint, text, text, text, integer, text, bigint\) to authenticated/);
   assert.match(sql, /foreign key \(creator_id, primary_artist_id\)/i);
   assert.match(sql, /publication is disabled/);
   assert.equal(sql.includes("genres"), false);
@@ -53,6 +53,19 @@ test("creator names do not collide with Almost Heard website objects", () => {
   assert.doesNotMatch(sql, /create trigger[\s\S]{0,80}on auth\.users/i);
 });
 
+test("storage onboarding does not touch Music Manager or website objects", () => {
+  const file = readFileSync(path.join(migrationsDir, "20261127210000_acc_storage_onboarding.sql"), "utf8");
+  assert.equal(file.includes("dcm_"), false);
+  assert.equal(file.includes("dcf_"), false);
+  assert.equal(file.includes("dcs_"), false);
+  assert.equal(file.includes("genres"), false);
+  assert.match(file, /health_status = 'healthy'/);
+  assert.match(file, /not valid/);
+  assert.match(file, /current media cannot be queued for deletion/);
+  const tables = [...file.matchAll(/create table(?: if not exists)? public\.([a-z0-9_]+)/gi)].map((match) => match[1]);
+  assert.deepEqual(tables.every((name) => name.startsWith("acc_")), true);
+});
+
 test("migration order keeps the applied files ahead of the standalone drop", () => {
   const names = readdirSync(migrationsDir).filter((name) => name.endsWith(".sql")).sort();
   assert.deepEqual(names, [
@@ -61,5 +74,6 @@ test("migration order keeps the applied files ahead of the standalone drop", () 
     "20261127192000_acc_catalogue.sql",
     "20261127193000_acc_operations.sql",
     "20261127200000_acc_drop_standalone_artist.sql",
+    "20261127210000_acc_storage_onboarding.sql",
   ]);
 });

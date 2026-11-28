@@ -86,7 +86,7 @@ export function MediaUpload({
       {needsReplacementConfirm ? (
         <label className="check">
           <input name="confirm_replacement" type="checkbox" />
-          <span>I understand this replacement creates a new recording. Plays, publication date, and promotion eligibility start over. The previous recording stays in history and is not swapped into old playlists.</span>
+          <span>I understand this stores a new submission and deletes the previous audio file after the new file is verified. The song and its place on a release stay.</span>
         </label>
       ) : null}
       {pending ? <div className="progress" aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div> : null}

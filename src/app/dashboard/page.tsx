@@ -24,8 +24,8 @@ export default async function DashboardPage() {
       </div>
       <div className="panel" style={{ marginTop: 18 }}>
         <h2>Storage</h2>
-        <p>{isVerifiedStorageConnection(storage?.healthStatus) ? "Cloudflare R2 is connected." : "Storage not connected."}</p>
-        <Link href="/dashboard/storage">Manage storage</Link>
+        <p>{isVerifiedStorageConnection(storage?.healthStatus) ? "Cloudflare R2 is connected." : "Storage not connected. Catalogue editing stays available."}</p>
+        <Link href="/dashboard/storage?return=%2Fdashboard">{isVerifiedStorageConnection(storage?.healthStatus) ? "Review storage" : "Set up storage"}</Link>
       </div>
       <div className="panel" style={{ marginTop: 18 }}>
         <h2>Recent songs</h2>

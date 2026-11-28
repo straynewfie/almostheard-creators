@@ -15,7 +15,7 @@ npm.cmd install
 npm.cmd run dev
 ```
 
-Copy `.env.example` to `.env.local` and fill in the shared Almost Heard Supabase values. Do not commit secrets. All five files in `supabase/migrations` are already applied to that project. Do not run them again. Tests replay them on an isolated database. See `supabase/README.md` and `docs/implementation/OWNER-ACTIONS.md`.
+Copy `.env.example` to `.env.local` and fill in the shared Almost Heard Supabase values. Do not commit secrets. The first five files in `supabase/migrations` are already applied to that project. Do not run them again. `20261127210000_acc_storage_onboarding.sql` is not applied. Tests replay every file on an isolated database. See `supabase/README.md` and `docs/implementation/OWNER-ACTIONS.md`.
 
 ```text
 npm.cmd run lint

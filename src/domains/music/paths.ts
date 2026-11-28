@@ -1,7 +1,7 @@
 /**
- * Object keys. Cover revisions are distinct objects so a failed replacement
- * cannot overwrite the current artwork. Audio uses the immutable recording id.
- * These differ from the single cover.webp path proposed in planning 09; see DECISIONS.
+ * Object keys. Artwork and audio are immutable.
+ * A replacement stores a new object and switches the current catalogue reference.
+ * The upload id is the upload intent id. The submission id is the recording id.
  */
 
 import { isUuid } from "@domains/music/validation";
@@ -14,19 +14,12 @@ function assertId(id: string, label: string): string {
   return value;
 }
 
-export function coverObjectKey(
-  parent: CoverParent,
-  id: string,
-  revision: number,
-): string {
-  if (!Number.isInteger(revision) || revision < 1) {
-    throw new Error("Artwork revision must be a positive whole number.");
-  }
-  return `${parent}/${assertId(id, "Catalogue id")}/cover/${revision}.webp`;
+export function coverObjectKey(parent: CoverParent, entityId: string, uploadId: string): string {
+  return `${parent}/${assertId(entityId, "Catalogue id")}/${assertId(uploadId, "Upload id")}.webp`;
 }
 
-export function audioObjectKey(recordingId: string): string {
-  return `recordings/${assertId(recordingId, "Recording id")}/audio.mp3`;
+export function audioObjectKey(songId: string, submissionId: string): string {
+  return `songs/${assertId(songId, "Song id")}/${assertId(submissionId, "Submission id")}.mp3`;
 }
 
 export function stagingObjectKey(intentId: string): string {
@@ -35,4 +28,8 @@ export function stagingObjectKey(intentId: string): string {
 
 export function healthcheckObjectKey(nonce: string): string {
   return `healthcheck/${assertId(nonce, "Health check id")}.txt`;
+}
+
+export function browserHealthObjectKey(nonce: string): string {
+  return `health/${assertId(nonce, "Browser check id")}.txt`;
 }

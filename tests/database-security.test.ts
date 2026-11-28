@@ -28,6 +28,503 @@ test("database security, tenancy, and catalogue operations", async () => {
   }
 });
 
+test("historical upload keys survive the storage onboarding migration", async () => {
+  const client = await openDatabase();
+  try {
+    await resetDatabase(client);
+    const directory = path.join(process.cwd(), "supabase", "migrations");
+    const earlier = [
+      "20261127190000_acc_identity.sql",
+      "20261127191000_acc_storage_audit_uploads.sql",
+      "20261127192000_acc_catalogue.sql",
+      "20261127193000_acc_operations.sql",
+      "20261127200000_acc_drop_standalone_artist.sql",
+    ];
+    for (const file of earlier) {
+      await client.query(readFileSync(path.join(directory, file), "utf8"));
+    }
+    await client.query("insert into auth.users (id, email) values ($1, $2)", [userA, "a@example.com"]);
+    await assumeRole(client, "authenticated", userA);
+    const creator = await one(client, "select public.acc_ensure_creator_profile('Creator A') as id");
+    await assumeRole(client, "service_role", userA);
+    await client.query("select public.acc_set_membership_state($1, 'active', false)", [creator]);
+    await assumeRole(client, "authenticated", userA);
+    const artist = await one(
+      client,
+      "insert into public.acc_artists (creator_id, slug, name) values ($1, 'artist-a', 'Artist A') returning id",
+      [creator],
+    );
+    const song = await one(
+      client,
+      "insert into public.acc_songs (creator_id, slug, title, primary_artist_id) values ($1, 'song-a', 'Song A', $2) returning id",
+      [creator, artist],
+    );
+    const recording = await one(
+      client,
+      "insert into public.acc_recordings (creator_id, song_id) values ($1, $2) returning id",
+      [creator, song],
+    );
+    const finalizedId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const pendingId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const oldAudio = `recordings/${recording}/audio.mp3`;
+    const oldCover = `artists/${artist}/cover/1.webp`;
+    await client.query("reset role");
+    await client.query("alter table public.acc_upload_intents disable trigger acc_upload_intents_protect");
+    await client.query(
+      `insert into public.acc_upload_intents (
+        creator_id, id, kind, recording_id, staging_key, object_key,
+        expected_mime, expected_bytes, expected_checksum_sha256, expires_at, state, idempotency_key
+      ) values (
+        $1, $2, 'audio', $3, $4, $5, 'audio/mpeg', 1000, $6, now(), 'finalized', 'historical-audio'
+      )`,
+      [creator, finalizedId, recording, `staging/${finalizedId}/object`, oldAudio, checksum],
+    );
+    await client.query(
+      `insert into public.acc_upload_intents (
+        creator_id, id, kind, artist_id, staging_key, object_key,
+        expected_mime, expected_bytes, expected_checksum_sha256, expires_at, state, idempotency_key
+      ) values (
+        $1, $2, 'cover', $3, $4, $5, 'image/webp', 1000, $6, now() + interval '1 hour', 'pending', 'historical-cover'
+      )`,
+      [creator, pendingId, artist, `staging/${pendingId}/object`, oldCover, checksum],
+    );
+    await client.query("alter table public.acc_upload_intents enable trigger acc_upload_intents_protect");
+    await client.query(readFileSync(path.join(directory, "20261127210000_acc_storage_onboarding.sql"), "utf8"));
+    assert.equal(
+      await one(client, "select object_key as id from public.acc_upload_intents where id = $1", [finalizedId]),
+      oldAudio,
+    );
+    assert.equal(
+      await one(client, "select state as id from public.acc_upload_intents where id = $1", [finalizedId]),
+      "finalized",
+    );
+    assert.equal(
+      await one(client, "select object_key as id from public.acc_upload_intents where id = $1", [pendingId]),
+      oldCover,
+    );
+    assert.equal(
+      await one(client, "select state as id from public.acc_upload_intents where id = $1", [pendingId]),
+      "expired",
+    );
+    await assumeRole(client, "service_role");
+    await client.query(
+      `insert into public.acc_storage_connections (creator_id, account_identifier, bucket_name, health_status)
+       values ($1, $2, 'creator-audio', 'healthy')`,
+      [creator, "a".repeat(32)],
+    );
+    await assumeRole(client, "authenticated", userA);
+    const fresh = await one(
+      client,
+      `select public.acc_create_upload_intent(
+        'audio', 'recording', $1::uuid, 'audio/mpeg', 1000, $2, 'fresh-audio-key'
+      ) as id`,
+      [recording, checksum],
+    );
+    assert.equal(
+      await one(client, "select object_key as id from public.acc_upload_intents where id = $1", [fresh]),
+      `songs/${song}/${recording}.mp3`,
+    );
+  } finally {
+    await client.end();
+  }
+});
+
+test("storage cleanup leases, artwork bucket, and exhausted retries", async () => {
+  const client = await openDatabase();
+  try {
+    await resetDatabase(client);
+    await applyMigrations(client);
+    await client.query("insert into auth.users (id, email) values ($1, $2)", [userA, "a@example.com"]);
+    await assumeRole(client, "authenticated", userA);
+    const creator = await one(client, "select public.acc_ensure_creator_profile('Creator A') as id");
+    await assumeRole(client, "service_role", userA);
+    await client.query("select public.acc_set_membership_state($1, 'active', false)", [creator]);
+    await client.query(
+      `insert into public.acc_storage_connections (creator_id, account_identifier, bucket_name, health_status)
+       values ($1, $2, 'creator-audio', 'healthy')`,
+      [creator, "a".repeat(32)],
+    );
+    await assumeRole(client, "authenticated", userA);
+    const artist = await one(
+      client,
+      "insert into public.acc_artists (creator_id, slug, name) values ($1, 'artist-a', 'Artist A') returning id",
+      [creator],
+    );
+    const intent = await one(
+      client,
+      `select public.acc_create_upload_intent(
+        'cover', 'artist', $1::uuid, 'image/png', 800, $2, 'cover-lease-key1'
+      ) as id`,
+      [artist, checksum],
+    );
+    const artworkKey = await one(
+      client,
+      "select object_key as id from public.acc_upload_intents where id = $1",
+      [intent],
+    );
+    await assumeRole(client, "service_role");
+    await client.query(
+      `insert into public.acc_storage_deletions (
+        creator_id, bucket_name, object_key, removal_granted, lease_token, next_attempt_at
+      ) values ($1, 'creator-audio', $2, true, gen_random_uuid(), now() + interval '10 minutes')`,
+      [creator, artworkKey],
+    );
+    await expectError(
+      client,
+      `select public.acc_write_verified_media(
+        $1::uuid, $2::uuid, $3, 800, 'image/webp', null, 'creator-audio', null, $3, 800
+      )`,
+      [creator, intent, checksum],
+      /reserved for removal/,
+    );
+    await client.query(
+      "update public.acc_storage_deletions set removal_granted = false where creator_id = $1 and object_key = $2",
+      [creator, artworkKey],
+    );
+    await client.query(
+      `select public.acc_write_verified_media(
+        $1::uuid, $2::uuid, $3, 800, 'image/webp', null, 'creator-audio', null, $3, 800
+      )`,
+      [creator, intent, checksum],
+    );
+    assert.equal(
+      await one(
+        client,
+        "select count(*)::int as id from public.acc_storage_deletions where creator_id = $1 and object_key = $2",
+        [creator, artworkKey],
+      ),
+      0,
+    );
+    assert.equal(
+      await one(
+        client,
+        "select count(*)::int as id from public.acc_media where creator_id = $1 and object_key = $2 and is_current",
+        [creator, artworkKey],
+      ),
+      1,
+    );
+    await client.query(
+      "insert into public.acc_storage_deletions (creator_id, bucket_name, object_key) values ($1, 'creator-audio', $2)",
+      [creator, artworkKey],
+    );
+    const currentClaim = await client.query("select object_key from public.acc_claim_storage_deletions($1)", [creator]);
+    assert.equal(currentClaim.rows.some((row) => row.object_key === artworkKey), false);
+    assert.equal(
+      await one(
+        client,
+        "select count(*)::int as id from public.acc_storage_deletions where creator_id = $1 and object_key = $2",
+        [creator, artworkKey],
+      ),
+      0,
+    );
+
+    await client.query(
+      "insert into public.acc_storage_deletions (creator_id, bucket_name, object_key) values ($1, 'creator-audio', 'staging/grant-check-object')",
+      [creator],
+    );
+    const leased = await client.query(
+      "select object_key, lease_token from public.acc_claim_storage_deletions($1)",
+      [creator],
+    );
+    assert.equal(leased.rows.length, 1);
+    assert.equal(leased.rows[0].object_key, "staging/grant-check-object");
+    const again = await client.query("select object_key from public.acc_claim_storage_deletions($1)", [creator]);
+    assert.equal(again.rows.length, 0);
+    const otherArtist = await one(
+      client,
+      "insert into public.acc_artists (creator_id, slug, name) values ($1, 'artist-b', 'Artist B') returning id",
+      [creator],
+    );
+    await client.query(
+      `with cfg as (select set_config('acc.media_finalize', 'on', true) as ready)
+       insert into public.acc_media (
+         creator_id, artist_id, kind, bucket, object_key, byte_size, mime_type,
+         checksum_sha256, verification_state, verified_at, is_current
+       )
+       select $1, $2, 'cover', 'creator-audio', 'staging/grant-check-object', 10, 'image/webp',
+         $3, 'verified', now(), true
+       where (select ready from cfg) = 'on'`,
+      [creator, otherArtist, checksum],
+    );
+    const granted = await one(
+      client,
+      "select public.acc_grant_storage_deletion($1, 'creator-audio', 'staging/grant-check-object', $2) as id",
+      [creator, leased.rows[0].lease_token],
+    );
+    assert.equal(granted, false);
+    assert.equal(
+      await one(
+        client,
+        "select count(*)::int as id from public.acc_storage_deletions where object_key = 'staging/grant-check-object'",
+        [],
+      ),
+      0,
+    );
+
+    await client.query(
+      `insert into public.acc_storage_deletions (creator_id, bucket_name, object_key, attempts)
+       values ($1, 'creator-audio', 'staging/exhausted-object', 8),
+              ($1, 'old-bucket', 'staging/other-bucket-object', 8)`,
+      [creator],
+    );
+    const hidden = await client.query("select object_key from public.acc_claim_storage_deletions($1)", [creator]);
+    assert.equal(hidden.rows.some((row) => row.object_key === "staging/exhausted-object"), false);
+    const listed = await client.query(
+      "select object_key, attempts from public.acc_list_storage_deletions($1)",
+      [creator],
+    );
+    assert.equal(listed.rows.some((row) => row.object_key === "staging/exhausted-object" && row.attempts === 8), true);
+    const reopened = await one(
+      client,
+      "select public.acc_reopen_storage_deletions($1, 'creator-audio') as id",
+      [creator],
+    );
+    assert.equal(reopened, 1);
+    assert.equal(
+      await one(
+        client,
+        "select attempts::int as id from public.acc_storage_deletions where object_key = 'staging/other-bucket-object'",
+        [],
+      ),
+      8,
+    );
+
+  } finally {
+    await client.end();
+  }
+});
+
+test("immutable artwork replacement keeps one current image", async () => {
+  const client = await openDatabase();
+  try {
+    await resetDatabase(client);
+    await applyMigrations(client);
+    await client.query(
+      "insert into auth.users (id, email) values ($1, $2), ($3, $4)",
+      [userA, "a@example.com", userB, "b@example.com"],
+    );
+    await assumeRole(client, "authenticated", userA);
+    const creator = await one(client, "select public.acc_ensure_creator_profile('Creator A') as id");
+    await assumeRole(client, "authenticated", userB);
+    const other = await one(client, "select public.acc_ensure_creator_profile('Creator B') as id");
+    await assumeRole(client, "service_role");
+    await client.query("select public.acc_set_membership_state($1, 'active', false)", [creator]);
+    await client.query("select public.acc_set_membership_state($1, 'active', false)", [other]);
+    await client.query(
+      `insert into public.acc_storage_connections (creator_id, account_identifier, bucket_name, health_status)
+       values ($1, $2, 'creator-audio', 'healthy')`,
+      [creator, "a".repeat(32)],
+    );
+    await assumeRole(client, "authenticated", userA);
+    const artist = await one(
+      client,
+      "insert into public.acc_artists (creator_id, slug, name) values ($1, 'artist-a', 'Artist A') returning id",
+      [creator],
+    );
+    const song = await one(
+      client,
+      "insert into public.acc_songs (creator_id, slug, title, primary_artist_id) values ($1, 'song-a', 'Song A', $2) returning id",
+      [creator, artist],
+    );
+    await assumeRole(client, "authenticated", userB);
+    await expectError(
+      client,
+      "select public.acc_create_upload_intent('cover', 'artist', $1::uuid, 'image/png', 800, $2, 'cross-creator-cover')",
+      [artist, checksum],
+      /not in this catalogue|not available/,
+    );
+    await assumeRole(client, "authenticated", userA);
+    const first = await one(
+      client,
+      `select public.acc_create_upload_intent(
+        'cover', 'artist', $1::uuid, 'image/png', 800, $2, 'cover-first-0001'
+      ) as id`,
+      [artist, checksum],
+    );
+    const secondIntent = await one(
+      client,
+      `select public.acc_create_upload_intent(
+        'cover', 'artist', $1::uuid, 'image/png', 900, $2, 'cover-second-001'
+      ) as id`,
+      [artist, checksum],
+    );
+    const firstKey = String(await one(client, "select object_key as id from public.acc_upload_intents where id = $1", [first]));
+    const secondKey = String(await one(client, "select object_key as id from public.acc_upload_intents where id = $1", [secondIntent]));
+    assert.equal(firstKey, `artists/${artist}/${first}.webp`);
+    assert.equal(secondKey, `artists/${artist}/${secondIntent}.webp`);
+    assert.notEqual(firstKey, secondKey);
+    const visibilityBefore = await one(client, "select visibility as id from public.acc_songs where id = $1", [song]);
+    await assumeRole(client, "service_role");
+    await expectError(
+      client,
+      `select public.acc_write_verified_media(
+        $1::uuid, $2::uuid, $3, 800, 'image/webp', null, 'creator-audio', null, $3, 799
+      )`,
+      [creator, first, checksum],
+      /does not match the upload intent/,
+    );
+    assert.equal(
+      await one(client, "select count(*)::int as id from public.acc_media where artist_id = $1", [artist]),
+      0,
+    );
+    await client.query(
+      `select public.acc_write_verified_media(
+        $1::uuid, $2::uuid, $3, 800, 'image/webp', null, 'creator-audio', null, $3, 800
+      )`,
+      [creator, first, checksum],
+    );
+    assert.equal(
+      await one(
+        client,
+        "select count(*)::int as id from public.acc_media where artist_id = $1 and is_current",
+        [artist],
+      ),
+      1,
+    );
+    assert.equal(
+      await one(
+        client,
+        "select count(*)::int as id from public.acc_storage_deletions where creator_id = $1 and object_key = $2",
+        [creator, firstKey],
+      ),
+      0,
+    );
+    await expectError(
+      client,
+      `select public.acc_write_verified_media(
+        $1::uuid, $2::uuid, $3, 900, 'image/webp', null, 'creator-audio', null, $3, 1
+      )`,
+      [creator, secondIntent, checksum],
+      /does not match the upload intent/,
+    );
+    assert.equal(
+      await one(
+        client,
+        "select object_key as id from public.acc_media where artist_id = $1 and is_current",
+        [artist],
+      ),
+      firstKey,
+    );
+    await expectError(
+      client,
+      `with cfg as (select set_config('acc.media_finalize', 'on', true) as ready)
+       insert into public.acc_media (
+         creator_id, artist_id, kind, bucket, object_key, byte_size, mime_type,
+         checksum_sha256, verification_state, verified_at, is_current
+       )
+       select $1, $2, 'cover', 'creator-audio', $3, 10, 'image/webp', $4, 'verified', now(), true
+       where (select ready from cfg) = 'on'`,
+      [creator, artist, `artists/${artist}/99999999-9999-4999-8999-999999999999.webp`, checksum],
+      /duplicate key|unique|acc_media_current_artist_cover/,
+    );
+    await client.query(
+      `select public.acc_write_verified_media(
+        $1::uuid, $2::uuid, $3, 900, 'image/webp', null, 'creator-audio', null, $3, 900
+      )`,
+      [creator, secondIntent, checksum],
+    );
+    assert.equal(
+      await one(
+        client,
+        "select count(*)::int as id from public.acc_media where artist_id = $1 and is_current",
+        [artist],
+      ),
+      1,
+    );
+    assert.equal(
+      await one(
+        client,
+        "select object_key as id from public.acc_media where artist_id = $1 and is_current",
+        [artist],
+      ),
+      secondKey,
+    );
+    assert.equal(
+      await one(
+        client,
+        "select count(*)::int as id from public.acc_storage_deletions where creator_id = $1 and bucket_name = 'creator-audio' and object_key = $2",
+        [creator, firstKey],
+      ),
+      1,
+    );
+    assert.equal(
+      await one(
+        client,
+        "select count(*)::int as id from public.acc_storage_deletions where creator_id = $1 and object_key = $2",
+        [creator, secondKey],
+      ),
+      0,
+    );
+    assert.equal(await one(client, "select visibility as id from public.acc_songs where id = $1", [song]), visibilityBefore);
+    await client.query(
+      "insert into public.acc_storage_deletions (creator_id, bucket_name, object_key) values ($1, 'other-bucket', $2)",
+      [creator, firstKey],
+    );
+    const claimed = await client.query("select bucket_name, object_key from public.acc_claim_storage_deletions($1)", [creator]);
+    assert.equal(claimed.rows.some((row) => row.object_key === secondKey), false);
+    assert.equal(claimed.rows.some((row) => row.bucket_name === "other-bucket"), false);
+    assert.equal(claimed.rows.some((row) => row.object_key === firstKey && row.bucket_name === "creator-audio"), true);
+    await client.query(
+      "select public.acc_queue_storage_deletion($1, 'creator-audio', $2, 'The obsolete artwork is still present.')",
+      [creator, firstKey],
+    );
+    assert.equal(
+      await one(
+        client,
+        "select count(*)::int as id from public.acc_storage_deletions where creator_id = $1 and bucket_name = 'creator-audio' and object_key = $2",
+        [creator, firstKey],
+      ),
+      1,
+    );
+    await assumeRole(client, "authenticated", userA);
+    const abandonedArtist = await one(
+      client,
+      "insert into public.acc_artists (creator_id, slug, name) values ($1, 'artist-b', 'Artist B') returning id",
+      [creator],
+    );
+    await assumeRole(client, "authenticated", userA);
+    const abandoned = await one(
+      client,
+      `select public.acc_create_upload_intent(
+        'cover', 'artist', $1::uuid, 'image/png', 800, $2, 'cover-abandoned-1'
+      ) as id`,
+      [abandonedArtist, checksum],
+    );
+    const abandonedKey = String(await one(client, "select object_key as id from public.acc_upload_intents where id = $1", [abandoned]));
+    await client.query("reset role");
+    await client.query("alter table public.acc_upload_intents disable trigger acc_upload_intents_protect");
+    await client.query("update public.acc_upload_intents set expires_at = now() - interval '1 minute' where id = $1", [abandoned]);
+    await client.query("alter table public.acc_upload_intents enable trigger acc_upload_intents_protect");
+    await assumeRole(client, "service_role");
+    await client.query("select public.acc_queue_finished_staging($1, 'creator-audio')", [creator]);
+    assert.equal(
+      await one(
+        client,
+        "select count(*)::int as id from public.acc_storage_deletions where creator_id = $1 and bucket_name = 'creator-audio' and object_key = $2",
+        [creator, abandonedKey],
+      ),
+      1,
+    );
+    assert.equal(
+      await one(
+        client,
+        "select count(*)::int as id from public.acc_storage_deletions where creator_id = $1 and object_key = $2",
+        [creator, secondKey],
+      ),
+      0,
+    );
+    assert.equal(await one(client, "select to_regclass('public.acc_artwork_restores')::text as id"), null);
+    await expectError(
+      client,
+      "select public.acc_queue_storage_deletion($1, 'other-bucket', $2, 'wrong bucket')",
+      [creator, firstKey],
+      /does not match this creator/,
+    );
+  } finally {
+    await client.end();
+  }
+});
+
 async function openDatabase(): Promise<SqlClient> {
   if (databaseUrl) {
     if (!databaseUrl.includes("creators_migration_review")) {
@@ -92,6 +589,7 @@ async function applyMigrations(client: SqlClient): Promise<void> {
     "20261127192000_acc_catalogue.sql",
     "20261127193000_acc_operations.sql",
     "20261127200000_acc_drop_standalone_artist.sql",
+    "20261127210000_acc_storage_onboarding.sql",
   ]);
   for (const file of files) {
     await client.query(readFileSync(path.join(directory, file), "utf8"));
@@ -124,6 +622,14 @@ async function reviewPrivileges(client: SqlClient): Promise<void> {
     "select has_function_privilege('authenticated', 'public.acc_create_upload_intent(text,text,uuid,text,bigint,text,text)', 'EXECUTE') as allowed",
   );
   assert.equal(intent.rows[0].allowed, true);
+  const deletions = await client.query(
+    "select has_table_privilege('authenticated', 'public.acc_storage_deletions', 'SELECT') as allowed",
+  );
+  assert.equal(deletions.rows[0].allowed, false);
+  const queue = await client.query(
+    "select has_function_privilege('authenticated', 'public.acc_queue_storage_deletion(uuid,text,text,text)', 'EXECUTE') as allowed",
+  );
+  assert.equal(queue.rows[0].allowed, false);
 }
 
 async function reviewBehaviour(client: SqlClient): Promise<void> {
@@ -158,6 +664,35 @@ async function reviewBehaviour(client: SqlClient): Promise<void> {
   await client.query("update public.acc_artists set name = 'Artist A renamed' where id = $1", [artist]);
   const renamed = await one(client, "select name from public.acc_artists where id = $1", [artist]);
   assert.equal(renamed, "Artist A renamed");
+  await expectError(
+    client,
+    `select public.acc_create_upload_intent(
+      'cover', 'artist', $1::uuid, 'image/png', 800, $2, 'cover-before-storage'
+    )`,
+    [artist, checksum],
+    /storage is not ready/,
+  );
+  await assumeRole(client, "service_role");
+  await client.query(
+    `insert into public.acc_storage_connections (creator_id, account_identifier, bucket_name, health_status)
+     values ($1, $2, 'creator-audio', 'unknown')`,
+    [creatorA, "a".repeat(32)],
+  );
+  await assumeRole(client, "authenticated", userA);
+  await expectError(
+    client,
+    `select public.acc_create_upload_intent(
+      'cover', 'artist', $1::uuid, 'image/png', 800, $2, 'cover-before-healthy'
+    )`,
+    [artist, checksum],
+    /storage is not ready/,
+  );
+  await assumeRole(client, "service_role");
+  await client.query(
+    "update public.acc_storage_connections set health_status = 'healthy' where creator_id = $1",
+    [creatorA],
+  );
+  await assumeRole(client, "authenticated", userA);
   const coverIntent = await one(
     client,
     `select public.acc_create_upload_intent(
@@ -166,7 +701,15 @@ async function reviewBehaviour(client: SqlClient): Promise<void> {
     [artist, checksum],
   );
   const coverKey = await one(client, "select object_key as id from public.acc_upload_intents where id = $1", [coverIntent]);
-  assert.equal(coverKey, `artists/${artist}/cover/1.webp`);
+  assert.equal(coverKey, `artists/${artist}/${coverIntent}.webp`);
+  const secondCover = await one(
+    client,
+    "select public.acc_create_upload_intent('cover', 'artist', $1::uuid, 'image/png', 800, $2, 'cover-intent-0002') as id",
+    [artist, checksum],
+  );
+  const secondCoverKey = await one(client, "select object_key as id from public.acc_upload_intents where id = $1", [secondCover]);
+  assert.equal(secondCoverKey, `artists/${artist}/${secondCover}.webp`);
+  assert.notEqual(coverKey, secondCoverKey);
   await expectError(
     client,
     "update public.acc_artists set visibility = 'public' where id = $1",
@@ -244,7 +787,7 @@ async function reviewBehaviour(client: SqlClient): Promise<void> {
     [recording, checksum],
   );
   const storedKey = await one(client, "select object_key as id from public.acc_upload_intents where id = $1", [intent]);
-  assert.equal(storedKey, `recordings/${recording}/audio.mp3`);
+  assert.equal(storedKey, `songs/${song}/${recording}.mp3`);
   await expectError(
     client,
     "select public.acc_create_upload_intent('audio', 'recording', $1::uuid, 'text/plain', 1200, $2, 'bad-mime-key')",
@@ -257,14 +800,25 @@ async function reviewBehaviour(client: SqlClient): Promise<void> {
     client,
     "select public.acc_create_upload_intent('audio', 'recording', $1::uuid, 'audio/mpeg', 1200, $2, 'cross-tenant-key')",
     [recording, checksum],
-    /not in this catalogue|not available|42501/,
+    /not in this catalogue|not available/,
   );
 
   await assumeRole(client, "service_role");
   await client.query(
-    `insert into public.acc_storage_connections (creator_id, account_identifier, bucket_name)
-     values ($1, $2, 'creator-audio')`,
-    [creatorA, "a".repeat(32)],
+    "update public.acc_storage_connections set health_status = 'unknown' where creator_id = $1",
+    [creatorA],
+  );
+  await expectError(
+    client,
+    `select public.acc_write_verified_media(
+      $1::uuid, $2::uuid, $3, 1200, 'audio/mpeg', null, 'creator-audio', 180000, $3, 1200
+    )`,
+    [creatorA, intent, checksum],
+    /storage is not ready/,
+  );
+  await client.query(
+    "update public.acc_storage_connections set health_status = 'healthy' where creator_id = $1",
+    [creatorA],
   );
   await expectError(
     client,
@@ -336,6 +890,91 @@ async function reviewBehaviour(client: SqlClient): Promise<void> {
     [recording],
   );
   assert.equal(retired, 1);
+  await assumeRole(client, "service_role");
+  const queuedBeforeRecovery = await one(
+    client,
+    "select count(*)::int as id from public.acc_storage_deletions where creator_id = $1",
+    [creatorA],
+  );
+  await assumeRole(client, "authenticated", userA);
+  assert.equal(queuedBeforeRecovery, 0);
+  await client.query("select public.acc_retire_replaced_audio($1)", [replacement]);
+  await assumeRole(client, "service_role");
+  assert.equal(
+    await one(
+      client,
+      "select count(*)::int as id from public.acc_storage_deletions where creator_id = $1 and object_key = $2 and bucket_name = 'creator-audio'",
+      [creatorA, `songs/${song}/${recording}.mp3`],
+    ),
+    1,
+  );
+  assert.equal(
+    await one(
+      client,
+      "select count(*)::int as id from public.acc_storage_deletions where creator_id = $1 and object_key = $2",
+      [creatorA, `songs/${song}/${replacement}.mp3`],
+    ),
+    0,
+  );
+  await client.query("delete from public.acc_storage_deletions where creator_id = $1", [creatorA]);
+  await client.query(
+    `with cfg as (select set_config('acc.media_finalize', 'on', true) as ready)
+     update public.acc_media
+     set is_current = true
+     where recording_id = $1
+       and (select ready from cfg) = 'on'`,
+    [recording],
+  );
+  await assumeRole(client, "authenticated", userA);
+  await client.query("select public.acc_recover_obsolete_audio($1)", [creatorA]);
+  await assumeRole(client, "service_role");
+  const queuedOldAudio = await one(
+    client,
+    "select count(*)::int as id from public.acc_storage_deletions where creator_id = $1 and object_key = $2 and bucket_name = 'creator-audio'",
+    [creatorA, `songs/${song}/${recording}.mp3`],
+  );
+  assert.equal(queuedOldAudio, 1);
+  assert.equal(
+    await one(client, "select count(*)::int as id from public.acc_media where recording_id = $1 and is_current", [recording]),
+    0,
+  );
+  assert.equal(
+    await one(client, "select count(*)::int as id from public.acc_media where recording_id = $1 and is_current", [replacement]),
+    1,
+  );
+  await assumeRole(client, "service_role");
+  await client.query(
+    `insert into public.acc_storage_deletions (creator_id, bucket_name, object_key)
+     values ($1, 'creator-audio', $2), ($1, 'other-bucket-name', $3)`,
+    [creatorA, `songs/${song}/${replacement}.mp3`, `songs/${song}/${recording}.mp3`],
+  );
+  const claimed = await client.query("select object_key from public.acc_claim_storage_deletions($1)", [creatorA]);
+  const claimedKeys = claimed.rows.map((row) => row.object_key);
+  assert.equal(claimedKeys.includes(`songs/${song}/${replacement}.mp3`), false);
+  assert.equal(claimedKeys.includes(`songs/${song}/${recording}.mp3`), true);
+  assert.equal(
+    await one(
+      client,
+      "select count(*)::int as id from public.acc_storage_deletions where creator_id = $1 and bucket_name = 'creator-audio' and object_key = $2",
+      [creatorA, `songs/${song}/${replacement}.mp3`],
+    ),
+    0,
+  );
+  assert.equal(
+    await one(
+      client,
+      "select count(*)::int as id from public.acc_storage_deletions where creator_id = $1 and bucket_name = 'other-bucket-name'",
+      [creatorA],
+    ),
+    1,
+  );
+  await expectError(
+    client,
+    "select public.acc_queue_storage_deletion($1, 'creator-audio', $2, 'do not delete current audio')",
+    [creatorA, `songs/${song}/${replacement}.mp3`],
+    /current media cannot be queued/,
+  );
+  await assumeRole(client, "authenticated", userA);
 
   const expiring = await one(
     client,

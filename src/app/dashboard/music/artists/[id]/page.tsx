@@ -43,7 +43,7 @@ export default async function ArtistEditorPage({
         {ctx.canWrite ? (
           storageReady
             ? <MediaUpload label="Cover image" accept="image/webp,image/png,image/jpeg" mode="cover" parent="artists" parentId={artist.id} />
-            : <StorageNotice />
+            : <StorageNotice returnTo={`/dashboard/music/artists/${artist.id}`} />
         ) : null}
       </section>
       {ctx.canWrite ? (

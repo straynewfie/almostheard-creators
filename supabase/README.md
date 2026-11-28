@@ -12,6 +12,8 @@ All five files were applied to the shared project on November 27, 2026, in this 
 
 The fifth file removes `standalone_artist`. A read-only check matched the live tables and columns to these files, and the live artist table no longer has that column. Supabase does not store the applied SQL, so a byte-for-byte comparison was not possible.
 
+`migrations/20261127210000_acc_storage_onboarding.sql` is a sixth file prepared for review. It is not applied. Do not run it until the owner actions say to. Tests apply it on the isolated database only.
+
 There is no down migration. Roll back by restoring a backup taken before the first migration. Hard deletion of catalogue rows is blocked. Deleting an `auth.users` row that has a creator profile is also blocked. A future purge needs its own reviewed migration.
 
 New creator rows start `inactive`. An operator with the service role can activate one account:

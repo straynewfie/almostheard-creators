@@ -42,13 +42,72 @@ npx.cmd tsx scripts/activate-creator.ts --id <creator-uuid> active
 
 It calls `acc_set_membership_state` for that creator only, with `p_test_reactivation` false unless `--test-reactivation` is passed. Signup itself leaves the creator `inactive`. The email lookup checks the first 200 auth users.
 
+## New migration, review then apply
+
+`supabase/migrations/20261127210000_acc_storage_onboarding.sql` is not applied. Apply it on the shared project when you are ready to test storage setup. Do not edit the five applied files, and do not run them again.
+
+The new object-key check is `NOT VALID`. Do not validate it. A finalized row may still use an older key, and that row is left as stored. If the file fails because an existing pending upload still uses an older object key, stop and report that. Do not delete those rows as part of this step.
+
+Until this file is applied, the storage screen reports that the database update is waiting. Catalogue editing continues to work.
+
+## Private Cloudflare OAuth client
+
+Do this once, on the Almost Heard Cloudflare account. Leave the client private. Do not create a creator bucket. The app creates the bucket during the test.
+
+1. Open [https://dash.cloudflare.com](https://dash.cloudflare.com) and sign in as a member of the Almost Heard account.
+2. Select the Almost Heard account.
+3. Open **Manage Account**, then **OAuth clients**.
+4. Select **Create**.
+5. Use these values:
+   - Client name: `Almost Heard Creators`
+   - Response type: `code`
+   - Grant type: `authorization_code` only. Do not enable a refresh token.
+   - Token endpoint auth method: `client_secret_post`
+   - Redirect URL: `http://localhost:3000/auth/cloudflare/callback`
+6. Do not add `https://creators.almostheard.ca/auth/cloudflare/callback`. That host is still the static Coming Soon Worker. It has no OAuth callback. Adding it does not test the app and can send the code to the public site.
+7. If the form rejects `http://localhost:3000`, stop and report that. Do not deploy the Next app over the Coming Soon Worker to get an HTTPS callback.
+8. On the scope step, select **Workers R2 Storage Write** only. The app requests the scope id `workers-r2.write`. If the dashboard shows a different id for that same permission, put that id in `CREATORS_CLOUDFLARE_OAUTH_SCOPE`. Do not add **API Tokens Write**, `offline_access`, or any scope whose name contains "token".
+9. Do not set a client URL, logo, or DNS TXT record. Do not change the client from private to public. Public cannot be undone.
+10. Create the client. Copy the client id and client secret into `.env.local`. Never commit them.
+
+```text
+CREATORS_CLOUDFLARE_OAUTH_CLIENT_ID=
+CREATORS_CLOUDFLARE_OAUTH_CLIENT_SECRET=
+```
+
+`CREATORS_CLOUDFLARE_OAUTH_SCOPE` stays empty unless step 8 requires the dashboard's exact scope id.
+
+## Local test without replacing the Coming Soon site
+
+The public site and the Next app are separate. The Worker in `wrangler.jsonc` serves `public/` at `creators.almostheard.ca`. The OAuth test uses the Next development server and does not deploy that Worker.
+
+1. Apply the new migration.
+2. Confirm `.env.local` has the Supabase values, the service-role key, the credential master key, and the two OAuth values above.
+3. From this repository, run `npm.cmd run dev`.
+4. Open `http://localhost:3000` and sign in as an active creator. The Cloudflare user who approves the consent screen must be a member of the Almost Heard account, because a private client can only be authorized by that account.
+5. Open **Set up storage**. Do not create a bucket in the Cloudflare dashboard.
+6. Choose **Continue with Cloudflare**, approve the consent screen, and select the Almost Heard account.
+7. The app should create a bucket named `almost-heard-` plus twelve characters, set browser upload rules, and then either ask for **Confirm browser upload** or pause.
+8. If it pauses because a lasting key could not be created, leave the client unchanged and use the permission note below. Do not add a scope during the same sitting.
+9. After a key exists, confirm the browser upload. Only then should storage become healthy and return you to the page that started setup.
+10. Revoke the OAuth grant from the Cloudflare profile page and retry a catalogue upload. The stored bucket key should still work. That result is not confirmed until this test is done.
+
+## If a lasting key cannot be created
+
+The app asks only for Workers R2 Storage Write. Creating a permanent S3 key is a user API token. Cloudflare's token API documents a different permission, **API Tokens Write**. That permission is not requested.
+
+What it would allow: creating, listing, and revoking API tokens for the user who approved the consent screen. A token policy can be limited to one bucket, but the permission itself is not limited to R2. A stolen client secret plus this scope could create tokens in that user's account.
+
+Alternative that does not add the scope: after the pause, approve a one-time screen where the creator pastes an Object Read & Write key for the bucket the app already named. That screen is not built. It needs its own approval.
+
+Do not enable either option until the private test shows the refusal and you choose one.
+
 ## Required before uploads work
 
 1. Set `SUPABASE_SERVICE_ROLE_KEY` only on the server.
 2. Set `CREATORS_CREDENTIAL_MASTER_KEY` to a new 32-byte base64 key, and `CREATORS_CREDENTIAL_KEY_VERSION` to `1`.
-3. Have the creator create their own R2 bucket and a bucket-scoped token. Enter those in Storage. The app derives `https://{accountId}.r2.cloudflarestorage.com` and does not accept another signing host.
-4. Restrict bucket CORS to the dashboard origin and the methods `PUT`, `GET`, `HEAD`, and `DELETE`.
-5. Keep the public base URL empty until public delivery is approved. A public custom domain does not make a prefix private.
+3. Apply the new storage migration and complete the OAuth test above. Do not create the creator bucket by hand.
+4. Keep the public base URL empty until public delivery is approved. A public custom domain does not make a prefix private.
 
 ## Business decisions still required
 

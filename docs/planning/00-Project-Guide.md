@@ -18,6 +18,8 @@ Keep discussions concise; develop requirements before implementation. Prefer sma
 
 Genres are deferred. The website and Music Manager are defining a shared genre catalogue. Creators will reuse that catalogue later and will not keep an independent genre model in the meantime. See 04.
 
+The 2026-11-28 cross-app review lives in the website repository, not here. Pointer: `docs/integration/ECOSYSTEM_REVIEW.md`.
+
 ## Phase 1 handoff
 - 09: Technical implementation specification and owner gates (master #14; #15–21).
 - 10: Cursor implementation prompt. Planning only; implementation requires separate authorization.
